@@ -39,12 +39,14 @@ from collections import defaultdict
 # ---------------------------------------------------------------------------
 
 REQUIRED_TOPICS = {
-    "/scan":                                    {"min_hz": 5.0,   "type": "sensor_msgs/LaserScan"},
-    "/odom":                                    {"min_hz": 12.0,  "type": "nav_msgs/Odometry"},
-    "/tf":                                      {"min_hz": 10.0,  "type": "tf2_msgs/TFMessage"},
-    "/camera/color/image_raw":                  {"min_hz": 12.0,  "type": "sensor_msgs/Image"},
-    "/camera/color/camera_info":                {"min_hz": 12.0,  "type": "sensor_msgs/CameraInfo"},
-    "/camera/aligned_depth_to_color/image_raw": {"min_hz": 12.0,  "type": "sensor_msgs/Image"},
+    # min_hz: minimum acceptable average rate (publishability threshold)
+    # target_hz: configured/expected rate — used for gap-based drop detection
+    "/scan":                                    {"min_hz": 5.0,   "target_hz": 18.0,  "type": "sensor_msgs/LaserScan"},
+    "/odom":                                    {"min_hz": 12.0,  "target_hz": 20.0,  "type": "nav_msgs/Odometry"},
+    "/tf":                                      {"min_hz": 10.0,  "target_hz": 50.0,  "type": "tf2_msgs/TFMessage"},
+    "/camera/color/image_raw":                  {"min_hz": 12.0,  "target_hz": 15.0,  "type": "sensor_msgs/Image"},
+    "/camera/color/camera_info":                {"min_hz": 12.0,  "target_hz": 15.0,  "type": "sensor_msgs/CameraInfo"},
+    "/camera/aligned_depth_to_color/image_raw": {"min_hz": 12.0,  "target_hz": 15.0,  "type": "sensor_msgs/Image"},
 }
 
 OPTIONAL_TOPICS = {
@@ -182,8 +184,13 @@ def check_frame_drops(bag_path, bag_topics, duration):
         if topic not in bag_topics:
             continue
 
-        expected_hz = REQUIRED_TOPICS.get(topic, {}).get("min_hz", 1.0)
-        expected_period = 1.0 / expected_hz if expected_hz > 0 else 1.0
+        spec = REQUIRED_TOPICS.get(topic, OPTIONAL_TOPICS.get(topic, {}))
+        # Use target_hz (configured rate) for gap threshold, not min_hz.
+        # min_hz is for average rate check only; using it here would allow
+        # multiple consecutive drops to go undetected (e.g. at 15Hz target,
+        # 2 consecutive drops = 0.200s gap; at 12Hz min, limit is 0.250s).
+        target_hz = spec.get("target_hz", spec.get("min_hz", 1.0))
+        expected_period = 1.0 / target_hz if target_hz > 0 else 1.0
         max_gap = MAX_GAP_MULTIPLIER * expected_period
 
         # Use rosbag filter to extract timestamps
@@ -208,9 +215,19 @@ def check_frame_drops(bag_path, bag_topics, duration):
             n_drops = sum(1 for g in gaps if g > max_gap)
             drop_rate = 100.0 * n_drops / len(gaps)
 
-            if n_drops == 0:
+            # Also report single-frame drops (gaps > 1.5x period) even if below failure threshold
+            n_single_drops = sum(1 for g in gaps if expected_period * 1.5 < g <= max_gap)
+
+            if n_drops == 0 and n_single_drops == 0:
                 record(PASS, topic + " gaps",
-                       "No drops. Max gap {:.3f}s (limit {:.3f}s)".format(max_actual_gap, max_gap))
+                       "No drops. Max gap {:.3f}s (limit {:.3f}s, target {:.0f}Hz)".format(
+                           max_actual_gap, max_gap, target_hz))
+            elif n_drops == 0:
+                record(PASS, topic + " gaps",
+                       "{} minor gap(s) (>{:.0f}ms, <{:.0f}ms). Max gap {:.3f}s. "
+                       "No consecutive drops (limit {:.3f}s).".format(
+                           n_single_drops, expected_period * 1500, max_gap * 1000,
+                           max_actual_gap, max_gap))
             elif drop_rate < 1.0:
                 record(WARN, topic + " gaps",
                        "{} drops ({:.2f}%) — max gap {:.3f}s. Likely USB 2 bandwidth pressure.".format(

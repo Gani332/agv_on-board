@@ -154,16 +154,18 @@ Source: `assembly.urdf` CAD. An L-bracket mount was trialled 2026-03-15 but caus
 
 ## Key Topics
 
-| Topic | Hz | Type | Source |
-|---|---|---|---|
-| `/cmd_vel` | on demand | `geometry_msgs/Twist` | Teleop / planner |
-| `/odom` | ~15 Hz | `nav_msgs/Odometry` | `myagv_odometry_node` |
-| `/scan` | ~18 Hz | `sensor_msgs/LaserScan` | `ydlidar_ros_driver` |
-| `/camera/color/image_raw` | 15 Hz | `sensor_msgs/Image` | `realsense2_camera` |
-| `/camera/color/camera_info` | 15 Hz | `sensor_msgs/CameraInfo` | `realsense2_camera` |
-| `/camera/aligned_depth_to_color/image_raw` | 15 Hz | `sensor_msgs/Image` | `realsense2_camera` |
-| `/camera/imu` | — | `sensor_msgs/Imu` | **Disabled — see USB 2 note below** |
-| `/tag_detections` | on demand | `apriltag_ros/AprilTagDetectionArray` | `apriltag_ros` |
+| Topic | Target Hz | Measured Hz | Type | Source |
+|---|---|---|---|---|
+| `/cmd_vel` | on demand | — | `geometry_msgs/Twist` | Teleop / planner |
+| `/odom` | 20 Hz | ~13 Hz | `nav_msgs/Odometry` | `myagv_odometry_node` |
+| `/scan` | 18 Hz | ~18 Hz | `sensor_msgs/LaserScan` | `ydlidar_ros_driver` |
+| `/camera/color/image_raw` | 15 Hz | ~15 Hz | `sensor_msgs/Image` | `realsense2_camera` |
+| `/camera/color/camera_info` | 15 Hz | ~15 Hz | `sensor_msgs/CameraInfo` | `realsense2_camera` |
+| `/camera/aligned_depth_to_color/image_raw` | 15 Hz | ~15 Hz | `sensor_msgs/Image` | `realsense2_camera` |
+| `/camera/imu` | 200 Hz | — (disabled) | `sensor_msgs/Imu` | **USB 2 only — see note below** |
+| `/tag_detections` | on demand | — | `apriltag_ros/AprilTagDetectionArray` | `apriltag_ros` |
+
+Measured Hz from 2026-03-15 test bag (62s, static). `/odom` lower than target — base controller serial output rate; further investigation pending.
 
 ### USB 2 limitation
 
