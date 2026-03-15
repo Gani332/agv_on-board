@@ -1,0 +1,83 @@
+# Sensor Extrinsics — All transforms relative to base_footprint
+# -----------------------------------------------------------------------
+# STATUS: PLACEHOLDER — fill in from physical measurement or CAD
+#
+# Convention:
+#   All transforms are expressed as [x, y, z, roll, pitch, yaw]
+#   in metres and radians, child frame relative to parent frame.
+#   This matches the args format of static_transform_publisher.
+#
+# Coordinate frames (REP-105 compliant):
+#   base_footprint  — robot footprint on the ground (origin of robot)
+#   base_link       — robot body centre (same x,y as footprint, z = height above ground)
+#   laser_frame     — YDLiDAR X2 optical centre
+#   camera_link     — RealSense D435i body
+#   camera_imu_optical_frame — D435i IMU (published by realsense-ros)
+#
+# How to measure:
+#   1. Print a 1:1 scale diagram of the AGV top plate.
+#   2. Measure x/y offsets of each sensor centre from the robot centre
+#      (base_footprint is at ground level, directly below robot centre).
+#   3. Measure z height from ground plane.
+#   4. Measure mounting angles (most sensors should be 0,0,0 if mounted flat).
+#   5. For the LiDAR yaw: check if the cable exit faces forward or backward.
+#      If backward, yaw = 0 is correct. If mounted reversed, yaw = pi.
+#
+# Verification:
+#   After updating, run: rosrun tf view_frames
+#   Check: odom → base_footprint → base_link → laser_frame is continuous.
+#   Check: base_footprint → camera_link → camera_imu_optical_frame is continuous.
+# -----------------------------------------------------------------------
+
+calibration_date: "YYYY-MM-DD"
+calibration_operator: ""
+measurement_method: "tape_measure"  # tape_measure | cad | checkerboard_optimisation
+
+# base_footprint → base_link
+# base_link is at robot body centre, raised from ground by body half-height
+base_footprint_to_base_link:
+  x: 0.0
+  y: 0.0
+  z: 0.0        # PLACEHOLDER — measure height of robot body centre from ground
+  roll: 0.0
+  pitch: 0.0
+  yaw: 0.0
+
+# base_footprint → laser_frame
+# Currently set in X2.launch as: 0.0 0.0 0.2 3.1415 0.0 0.0
+# VERIFY: is the 180-deg yaw correct for your mounting orientation?
+base_footprint_to_laser_frame:
+  x: 0.0        # PLACEHOLDER — forward offset from robot centre
+  y: 0.0        # PLACEHOLDER — lateral offset (positive = left)
+  z: 0.20       # PLACEHOLDER — height above ground (20cm default in X2.launch)
+  roll: 0.0
+  pitch: 0.0
+  yaw: 3.1415   # pi — VERIFY if X2 is mounted forward (0) or backward (pi)
+
+# base_footprint → camera_link
+base_footprint_to_camera_link:
+  x: 0.0        # PLACEHOLDER
+  y: 0.0        # PLACEHOLDER
+  z: 0.0        # PLACEHOLDER
+  roll: 0.0
+  pitch: 0.0
+  yaw: 0.0
+
+# camera_link → camera_imu_optical_frame
+# Provided by realsense-ros from factory SDK; verify against SDK output.
+# Command: rostopic echo /camera/extrinsics/depth_to_imu
+camera_link_to_imu:
+  x: 0.0        # PLACEHOLDER — read from SDK
+  y: 0.0
+  z: 0.0
+  roll: 0.0
+  pitch: 0.0
+  yaw: 0.0
+
+# Odometry wheel calibration (feeds into odom frame accuracy)
+# Update base.yaml after physical calibration tests.
+odometry:
+  wheel_radius_m: 0.06      # PLACEHOLDER — calibrate by driving measured distance
+  wheel_base_m: 0.32        # PLACEHOLDER — calibrate by 360-degree turn test
+  linear_error_1m: ~        # measured % error driving 1m straight
+  angular_error_360deg: ~   # measured degree error on full 360 turn

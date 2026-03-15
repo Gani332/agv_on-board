@@ -1,0 +1,68 @@
+# RealSense D435i — Camera Intrinsics
+# -----------------------------------------------------------------------
+# STATUS: PLACEHOLDER — fill in from factory calibration export
+#
+# How to populate this file:
+#   1. Connect the D435i and run:
+#        rs-enumerate-devices -c
+#      This prints the factory-calibrated intrinsics for every stream.
+#   2. Alternatively, use realsense-ros:
+#        rostopic echo /camera/color/camera_info
+#      The K matrix and distortion coefficients are published live.
+#   3. For cross-validation, run a checkerboard calibration:
+#        rosrun camera_calibration cameracalibrator.py \
+#          --size 9x6 --square 0.025 image:=/camera/color/image_raw \
+#          camera:=/camera/color
+#      Reprojection error target: < 0.5 px RMS
+#
+# The values below are representative D435i defaults at 640x480.
+# REPLACE with your specific unit's factory values.
+# -----------------------------------------------------------------------
+
+calibration_date: "YYYY-MM-DD"   # fill in when calibrated
+calibration_operator: ""
+calibration_method: "factory"    # factory | checkerboard | charuco
+reprojection_error_px: ~         # fill in from calibration output
+
+color_camera:
+  image_width: 640
+  image_height: 480
+  camera_matrix:       # K = [fx 0 cx; 0 fy cy; 0 0 1]
+    rows: 3
+    cols: 3
+    data: [617.0, 0.0, 320.0,
+             0.0, 617.0, 240.0,
+             0.0, 0.0, 1.0]      # PLACEHOLDER — replace with factory values
+  distortion_model: "plumb_bob"
+  distortion_coefficients:
+    rows: 1
+    cols: 5
+    data: [0.0, 0.0, 0.0, 0.0, 0.0]   # PLACEHOLDER — D435i is near-zero but verify
+
+depth_camera:
+  image_width: 640
+  image_height: 480
+  camera_matrix:
+    rows: 3
+    cols: 3
+    data: [383.0, 0.0, 320.0,
+             0.0, 383.0, 240.0,
+             0.0, 0.0, 1.0]      # PLACEHOLDER — replace with factory values
+  distortion_model: "plumb_bob"
+  distortion_coefficients:
+    rows: 1
+    cols: 5
+    data: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+# Colour-to-depth extrinsic (provided by factory, available via SDK)
+color_to_depth_extrinsic:
+  rotation: [1.0, 0.0, 0.0,
+             0.0, 1.0, 0.0,
+             0.0, 0.0, 1.0]      # PLACEHOLDER
+  translation: [0.015, 0.0, 0.0] # ~15mm baseline D435i — PLACEHOLDER
+
+# Depth accuracy characterisation (measure with realsense-viewer depth accuracy tool)
+depth_accuracy:
+  error_at_0_5m_mm: ~   # fill in
+  error_at_1_0m_mm: ~   # fill in
+  error_at_2_0m_mm: ~   # fill in

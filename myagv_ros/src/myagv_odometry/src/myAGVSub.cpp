@@ -21,7 +21,7 @@ int main(int argc, char* argv[])
 
 	if (!myAGV.init())
 		ROS_ERROR("myAGV initialized failed!");
-	ROS_ERROR("myAGV initialized successful!");
+	ROS_INFO("myAGV initialized successful!");
 
 	ros::Subscriber sub = n.subscribe("cmd_vel", 50, cmdCallback);
 	ros::Rate loop_rate(100);

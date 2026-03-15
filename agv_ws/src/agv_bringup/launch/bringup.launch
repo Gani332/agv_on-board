@@ -1,7 +1,12 @@
 <launch>
 
   <!-- 1. Start the AGV base driver (motion + odom + TF) -->
-  <node pkg="myagv_odometry" type="myagv_odometry_node" name="myagv_odometry_node" output="screen" />
+  <!-- serial_port: the USB-serial device for the STM32 base controller.
+       Default /dev/ttyACM0; override with <arg name="serial_port" value="..."/> -->
+  <arg name="serial_port" default="/dev/ttyACM0" />
+  <node pkg="myagv_odometry" type="myagv_odometry_node" name="myagv_odometry_node" output="screen">
+    <param name="serial_port" value="$(arg serial_port)" />
+  </node>
 
   <!-- 2. Start the YDLIDAR X2 driver -->
   <include file="$(find ydlidar_ros_driver)/launch/X2.launch" />

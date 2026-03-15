@@ -1,5 +1,11 @@
-port: "/dev/ttyUSB0"
+# AGV base controller configuration
+# The serial port is passed to myagv_odometry_node via bringup.launch
+# Override with: roslaunch agv_bringup bringup.launch serial_port:=/dev/ttyACM0
+serial_port: "/dev/ttyACM0"  # USB-serial to STM32 base MCU (shows as ttyACM on most systems)
 baud: 115200
-wheel_radius: 0.06
-wheel_base: 0.32
 
+# Wheel kinematics — UPDATE THESE after physical calibration (Stage 1b)
+# Procedure: drive 1m straight, measure actual distance; drive 360° circle, measure heading error
+# See: agv_on-board/docs/calibration/odometry_calibration_procedure.md
+wheel_radius: 0.06    # metres — PLACEHOLDER, needs calibration
+wheel_base: 0.32      # metres (track width) — PLACEHOLDER, needs calibration

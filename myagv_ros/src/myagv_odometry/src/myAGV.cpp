@@ -12,8 +12,7 @@ const unsigned char header[2] = { 0xfe, 0xfe };
 //const double ROBOT_LENGTH = 210.50;
 
 boost::asio::io_service iosev;
-//boost::asio::serial_port sp(iosev, "/dev/ttyUSB0");
-boost::asio::serial_port sp(iosev, "/dev/ttyACM0");
+boost::asio::serial_port sp(iosev);
 
 boost::array<double, 36> odom_pose_covariance = {
     {1e-9, 0, 0, 0, 0, 0,
@@ -58,6 +57,11 @@ MyAGV::~MyAGV()
 
 bool MyAGV::init()
 {
+    std::string serial_port;
+    n.param<std::string>("serial_port", serial_port, "/dev/ttyACM0");
+    sp.open(serial_port);
+    ROS_INFO("Opened serial port: %s", serial_port.c_str());
+
     sp.set_option(boost::asio::serial_port::baud_rate(115200));
     sp.set_option(boost::asio::serial_port::flow_control(boost::asio::serial_port::flow_control::none));
     sp.set_option(boost::asio::serial_port::parity(boost::asio::serial_port::parity::none));
@@ -278,4 +282,5 @@ bool MyAGV::execute(double linearX, double linearY, double angularZ)
     msgl.twist.covariance = odom_twist_covariance;
 
     pub.publish(msgl);
+    return true;
 }
