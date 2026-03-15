@@ -111,7 +111,7 @@ def main():
     if fx < 300:
         rospy.logwarn("fx=%.1f looks wrong — is the camera actually connected?", fx)
     else:
-        rospy.loginfo("PASS: fx=%.1f looks plausible for D435i at %dx%d",
+        rospy.loginfo("PASS: fx=%.1f looks plausible for D455 at %dx%d",
                       fx, color_info.width, color_info.height)
 
 

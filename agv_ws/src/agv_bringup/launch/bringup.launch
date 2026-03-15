@@ -19,7 +19,7 @@
   <node pkg="tf" type="static_transform_publisher" name="base_to_camera_link"
         args="-0.132025 0.000153 0.187925 -1.570796 -0.007906 1.570796 /base_footprint /camera_link 40" />
 
-  <!-- RealSense D435i: 640x480 @ 15 Hz colour + depth, IMU enabled.
+  <!-- RealSense D455: 640x480 @ 15 Hz colour + depth, IMU enabled.
        align_depth: aligns depth to colour frame (required for RGB-D SLAM).
        enable_sync: hardware-syncs colour+depth frames (reduces motion artefacts).
        unite_imu_method: "linear_interpolation" combines accel+gyro into one IMU message. -->

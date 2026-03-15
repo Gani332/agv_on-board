@@ -117,7 +117,7 @@ def main():
     accel_noise_max = max(ax_std, ay_std, az_std)
 
     # Gravity: check vector magnitude, not just Z axis.
-    # The D435i may be mounted with gravity on any axis depending on orientation.
+    # The D455 may be mounted with gravity on any axis depending on orientation.
     gravity_magnitude = math.sqrt(ax_mean**2 + ay_mean**2 + az_mean**2)
     gravity_error = abs(gravity_magnitude - GRAVITY_NOMINAL_M_S2)
     # Identify dominant gravity axis (whichever has the largest absolute mean)

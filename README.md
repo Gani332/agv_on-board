@@ -1,383 +1,193 @@
 # AGV On-Board Stack
 
-## Purpose
+On-vehicle ROS stack for the AGV robots used in the distributed multi-robot SLAM dataset project. This is the robot-side sensing, control, and dataset collection layer.
 
-This folder contains the on-vehicle ROS stack for the AGV robots used in the distributed SLAM dataset project.
+---
 
-The local layout has now been refactored to mirror the robot-side structure that actually runs on the AGVs:
+## Workspace Layout
 
-- `myagv_ros/` for the main robot workspace
-- `agv_ws/` for bring-up, logging, and RealSense camera integration
-- `workspaces/myagv_gmapping_ws/` kept as a legacy snapshot from the earlier local copy
-
-This is the robot-side sensing, control, and logging layer. It is the foundation for dataset collection, but publishability still depends on calibration, synchronization, metadata, QA, and benchmark design.
-
-## Canonical Layout
-
-Use this as the main mental model going forward:
-
-```text
+```
 agv_on-board/
-├── agv_ws/
+├── myagv_ros/                  # Vendor robot workspace (base, LiDAR, URDF)
 │   └── src/
-│       ├── agv_bringup/
-│       └── realsense-ros/
-├── myagv_ros/
+│       ├── myagv_odometry/     # Serial interface to AGV base + odom publisher
+│       ├── ydlidar_ros_driver/ # YDLiDAR X2 driver + laser_frame TF
+│       ├── myagv_teleop/       # Keyboard teleoperation
+│       ├── myagv_navigation/   # gmapping / AMCL / move_base launch files
+│       ├── myagv_urdf/         # Robot URDF (not used in dataset bringup)
+│       └── myagv_ps2/          # PS2 controller (unused in dataset)
+│
+├── agv_ws/                     # Dataset bringup workspace
 │   └── src/
-│       ├── charging/
-│       ├── myagv_navigation/
-│       ├── myagv_odometry/
-│       ├── myagv_ps2/
-│       ├── myagv_teleop/
-│       ├── myagv_urdf/
-│       └── ydlidar_ros_driver/
-├── docs/
-├── drivers/
+│       ├── agv_bringup/        # Main dataset launch + calibration files
+│       │   ├── launch/
+│       │   │   ├── bringup.launch   # ★ Start everything: odom + LiDAR + camera
+│       │   │   ├── logging.launch   # rosbag recording
+│       │   │   └── apriltag.launch  # AprilTag detection (future use)
+│       │   └── calibration/         # ★ All calibration output files
+│       │       ├── extrinsics.yaml
+│       │       ├── camera_intrinsics.yaml
+│       │       ├── imu_intrinsics.yaml
+│       │       └── mocap_to_base.yaml
+│       └── realsense-ros/      # RealSense SDK ROS wrapper
+│
 ├── scripts/
+│   └── calibration/            # ★ Calibration scripts (run on robot)
+│       ├── extract_realsense_calib.py  # Reads factory intrinsics from live ROS topics
+│       └── imu_static_test.py          # 60s static IMU noise characterisation
+│
+├── docs/
+│   ├── PUBLISHABILITY_CHECKLIST.md
+│   └── STAGE_1_CALIBRATION_SOP.md
+│
+├── drivers/                    # Vendored third-party SDKs
+│   ├── YDLidar-SDK/
+│   └── robot_pose_ekf/
+│
+├── configs/
+│   └── yyy.rviz
+│
 └── workspaces/
-    └── myagv_gmapping_ws/   # legacy snapshot
+    └── myagv_gmapping_ws/      # Legacy snapshot — do not use
 ```
 
-## Which Workspace To Use
+---
 
-### `myagv_ros`
+## Quick Start
 
-This is the main robot runtime workspace and should be treated as the primary source tree for:
+**On the robot** (SSH to `ubuntu@192.168.0.185`):
 
-- base control
-- teleop
-- navigation
-- LiDAR
-- URDF
-- auxiliary robot packages
+```bash
+# 1. Pull latest
+cd ~/slam_project && git pull origin main
 
-### `agv_ws`
+# 2. Launch everything (odom + LiDAR + RealSense D455 + IMU + all TFs)
+source ~/slam_project/myagv_ros/devel/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+roslaunch agv_bringup bringup.launch
 
-This is the dataset bring-up and camera-side workspace and should be treated as the primary source tree for:
-
-- unified bring-up
-- rosbag logging
-- RealSense integration
-- dataset-facing launch composition
-
-### `workspaces/myagv_gmapping_ws`
-
-This is a preserved older local snapshot. Keep it for reference, but do not treat it as the canonical robot layout anymore.
-
-## Publishability Checklist
-
-The formal dataset quality checklist for this project lives here:
-
-- [PUBLISHABILITY_CHECKLIST.md](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/docs/PUBLISHABILITY_CHECKLIST.md)
-
-That document defines the actual bar for a publishable distributed SLAM dataset:
-
-- sensor coverage
-- organization
-- calibration
-- synchronization
-- quality thresholds
-- scenario design
-- run duration
-- QA
-- benchmark utility
-
-## What Each Area Does
-
-### `myagv_ros`
-
-This is now the main ROS 1 catkin workspace that matches the robot-side deployment layout.
-
-#### `myagv_odometry`
-
-This package interfaces with the AGV base controller over serial.
-
-Its responsibilities are:
-
-- subscribe to `cmd_vel`
-- send scaled velocity commands to the base
-- read back velocity and IMU-like feedback
-- integrate odometry
-- publish `nav_msgs/Odometry`
-- broadcast `odom -> base_footprint`
-
-Main files:
-
-- [myAGV.cpp](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_odometry/src/myAGV.cpp)
-- [myAGVSub.cpp](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_odometry/src/myAGVSub.cpp)
-- [myagv_active.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_odometry/launch/myagv_active.launch)
-
-#### `ydlidar_ros_driver`
-
-This package publishes LiDAR data into ROS.
-
-Its responsibilities are:
-
-- connect to the YDLidar device
-- publish `sensor_msgs/LaserScan` on `scan`
-- publish a point cloud on `point_cloud`
-- define the static transform from the robot base to the laser frame
-
-Main files:
-
-- [ydlidar_ros_driver.cpp](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp)
-- [X2.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/ydlidar_ros_driver/launch/X2.launch)
-
-#### `myagv_teleop`
-
-This package provides keyboard teleoperation.
-
-Its responsibilities are:
-
-- read keyboard input
-- convert keys into `geometry_msgs/Twist`
-- publish commands to `/cmd_vel`
-
-Main file:
-
-- [myagv_teleop.py](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_teleop/scripts/myagv_teleop.py)
-
-#### `myagv_navigation`
-
-This package contains launch files and RViz configurations for mapping and navigation.
-
-Its responsibilities are:
-
-- launch gmapping for online 2D SLAM
-- launch AMCL for localization against a saved map
-- compose full runtime launch files for SLAM and navigation
-
-Main files:
-
-- [gmapping.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_navigation/launch/gmapping.launch)
-- [myagv_slam_laser.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_navigation/launch/myagv_slam_laser.launch)
-- [navigation_active.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_navigation/launch/navigation_active.launch)
-- [amcl.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_navigation/launch/amcl.launch)
-
-### `agv_ws`
-
-This workspace matches the AGV-side dataset bring-up path.
-
-#### `agv_bringup`
-
-This package is the main place for:
-
-- unified driver bring-up
-- logging launch files
-- scenario-facing collection workflows
-
-Main files:
-
-- [bringup.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/agv_ws/src/agv_bringup/launch/bringup.launch)
-- [logging.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/agv_ws/src/agv_bringup/launch/logging.launch)
-
-#### `realsense-ros`
-
-This is the camera-side workspace content for RealSense D435i integration.
-
-### `scripts`
-
-This contains a standalone Python serial test script:
-
-- [myAGVBase.py](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/scripts/myAGVBase.py)
-
-It appears to be a low-level test utility for directly sending and receiving base packets outside the ROS node.
-
-### `drivers`
-
-This folder contains vendored third-party components and supporting code.
-
-#### `drivers/YDLidar-SDK`
-
-Vendor SDK used by the LiDAR ROS driver.
-
-#### `drivers/robot_pose_ekf`
-
-Vendored ROS package for pose fusion. It exists in this repository, but it does not appear to be part of the main onboard launch path currently in use.
-
-#### Other driver folders
-
-There are also directories such as `librealsense` and `teleop_twist_keyboard`, but the main active onboard stack identified here is centered around the catkin workspace packages above.
-
-### `configs`
-
-This contains RViz-related configuration assets such as:
-
-- [yyy.rviz](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/configs/yyy.rviz)
-
-## Runtime Architecture
-
-The main runtime can be understood as the following chain:
-
-```text
-Keyboard / planner
-        |
-        v
-     /cmd_vel
-        |
-        v
-myagv_odometry_node
-        |
-        +--> serial commands to AGV base
-        +--> serial feedback from AGV base
-        |
-        +--> /odom
-        +--> TF: odom -> base_footprint
-
-YDLidar device
-        |
-        v
-ydlidar_ros_driver
-        |
-        +--> /scan
-        +--> /point_cloud
-        +--> TF: base_footprint -> laser_frame
-
-/odom + /scan
-        |
-        v
-gmapping / AMCL / move_base
+# 3. Start recording (separate terminal)
+roslaunch agv_bringup logging.launch
 ```
 
-## ROS Topics and Frames
-
-### Core topics
-
-The stack primarily revolves around these ROS topics:
-
-- `cmd_vel`: commanded base motion
-- `odom`: robot odometry estimate
-- `scan`: 2D LiDAR scans
-- `point_cloud`: LiDAR points published by the LiDAR driver
-
-### Core frames
-
-The main TF frames are:
-
-- `odom`
-- `base_footprint`
-- `base_link`
-- `laser_frame`
-
-The transform chain is intended to be:
-
-```text
-odom -> base_footprint -> base_link
-                      -> laser_frame
+**Teleop** (separate terminal, robot side):
+```bash
+rosrun myagv_teleop myagv_teleop.py
 ```
 
-## Main Launch Flow
+---
 
-### Base + LiDAR bringup
+## What Each Workspace Does
 
-The launch file:
+### `myagv_ros` — Robot runtime
 
-- [myagv_active.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_odometry/launch/myagv_active.launch)
+The vendor workspace. Build and source this first as `agv_ws` depends on it.
 
-starts:
+| Package | What it does |
+|---|---|
+| `myagv_odometry` | Serial comms to AGV base controller; publishes `/odom` and `odom → base_footprint` TF |
+| `ydlidar_ros_driver` | Drives YDLiDAR X2; publishes `/scan` and `base_footprint → laser_frame` TF |
+| `myagv_teleop` | Keyboard teleoperation via `/cmd_vel` |
+| `myagv_navigation` | gmapping / AMCL / move_base launch files (development use) |
 
-- `myagv_odometry_node`
-- a static transform between `base_footprint` and `base_link`
-- the YDLidar launch file
+### `agv_ws` — Dataset bringup
 
-### Online SLAM
+The dataset collection workspace. Source after `myagv_ros`.
 
-The launch file:
+| Package | What it does |
+|---|---|
+| `agv_bringup` | Single launch file starts all sensors; holds all calibration files |
+| `realsense-ros` | RealSense SDK ROS wrapper for D455 colour, depth, and IMU |
 
-- [myagv_slam_laser.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_navigation/launch/myagv_slam_laser.launch)
+### `scripts/calibration` — Calibration tools
 
-is intended to combine:
+Run on the robot to generate/update the calibration YAML files in `agv_bringup/calibration/`.
 
-- gmapping
-- base and LiDAR bringup
-- RViz
+| Script | What it does |
+|---|---|
+| `extract_realsense_calib.py` | Reads factory intrinsics from `/camera/color/camera_info` and `/camera/depth/camera_info`; writes `camera_intrinsics.yaml` |
+| `imu_static_test.py` | 60 s static test on `/camera/imu`; reports noise, drift, gravity alignment; writes `imu_intrinsics.yaml` |
 
-### Navigation on a saved map
+---
 
-The launch file:
+## Transform Tree
 
-- [navigation_active.launch](/Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/agv_on-board/myagv_ros/src/myagv_navigation/launch/navigation_active.launch)
+```
+world (PhaseSpace mocap)
+  └── odom  [dynamic, published by myagv_odometry_node]
+        └── base_footprint
+              ├── laser_frame         [TF in X2.launch:     z=0.100m measured]
+              └── camera_link         [TF in bringup.launch: x=-0.193m L-bracket]
+                    ├── camera_color_optical_frame
+                    ├── camera_depth_optical_frame
+                    └── camera_imu_optical_frame
+```
 
-is intended to combine:
+Static TFs are published at 40 Hz by `static_transform_publisher` nodes. Optical sub-frames are published by `realsense2_camera`.
 
-- `map_server`
-- AMCL
-- `move_base`
-- RViz
+---
 
-## What This Stack Does Well
+## Key Topics
 
-This codebase already gives you a workable robot runtime for:
+| Topic | Type | Source |
+|---|---|---|
+| `/cmd_vel` | `geometry_msgs/Twist` | Teleop / planner |
+| `/odom` | `nav_msgs/Odometry` | `myagv_odometry_node` |
+| `/scan` | `sensor_msgs/LaserScan` | `ydlidar_ros_driver` |
+| `/camera/color/image_raw` | `sensor_msgs/Image` | `realsense2_camera` |
+| `/camera/aligned_depth_to_color/image_raw` | `sensor_msgs/Image` | `realsense2_camera` |
+| `/camera/imu` | `sensor_msgs/Imu` | `realsense2_camera` (200 Hz, accel+gyro combined) |
 
-- moving the AGV from ROS
-- reading onboard motion feedback
-- publishing LiDAR scans
-- running local 2D mapping
-- running localization and navigation against a saved map
+---
 
-That makes it a useful base for dataset collection on the robot itself.
+## Calibration Status (Stage 1 — Complete)
 
-## What This Stack Does Not Yet Provide
+All calibration outputs live in `agv_ws/src/agv_bringup/calibration/`.
 
-For a distributed SLAM dataset collection project, some important capabilities are not present here as first-class components.
+| Parameter | Status | Value |
+|---|---|---|
+| `base_footprint → laser_frame` z | ✅ Measured | 0.100 m |
+| `base_footprint → laser_frame` x,y | ⏳ Pending | (0, 0) placeholder |
+| `base_footprint → camera_link` | ✅ Measured | (−0.193, 0.003, 0.118) m |
+| Camera colour intrinsics | ✅ Factory | fx=386.8, fy=386.4 px |
+| Camera depth intrinsics | ✅ Factory | fx=fy=391.3 px |
+| IMU noise density (accel) | ✅ Factory spec | 0.0028 m/s²/√Hz |
+| IMU noise density (gyro) | ✅ Factory spec | 2.44×10⁻⁴ rad/s/√Hz |
+| IMU gyro drift (measured) | ✅ Static test | 0.153 deg/s |
+| Wheel odometry scale | ⏳ Pending | Stage 2 (needs mocap) |
+| PhaseSpace extrinsic | ⏳ Pending | Stage 2 |
 
-Notably absent are:
+See `docs/STAGE_1_CALIBRATION_SOP.md` for the full calibration procedure.
 
-- rosbag session management
-- dataset recording launch files
-- timestamp synchronization across robots
-- robot ID and namespace management for multi-robot operation
-- explicit inter-robot communication or map exchange
-- dataset metadata export
-- sensor calibration management
-- collection orchestration scripts
+---
 
-So this folder should be seen as the onboard sensing and motion layer, not the full distributed collection pipeline.
+## Hardware Connections
 
-## Important Implementation Notes
+| Device | Port | Baud |
+|---|---|---|
+| AGV base controller | `/dev/ttyACM0` | — (firmware protocol) |
+| YDLiDAR X2 | `/dev/ttyAMA0` | 115200 |
+| RealSense D455 | USB 3.0 | — (USB) |
 
-There are a few code-level details worth knowing before relying on this stack heavily.
+---
 
-- The AGV base serial port is hardcoded to `/dev/ttyACM0` in the odometry code.
-- The LiDAR port is set separately in the launch file, currently `/dev/ttyAMA0`.
-- The odometry code integrates pose locally from returned velocity data rather than using a more formal fused estimator in the active launch path.
-- `robot_pose_ekf` is present in the repository but is not clearly wired into the main runtime.
-- The stack appears targeted at ROS 1 and catkin.
+## Repository Sync
 
-## Known Issues In The Current Code
+The robot clones this repo at `~/slam_project/`. The Mac side is the source of truth.
 
-These are useful to know if you plan to run or extend the stack:
+```bash
+# Mac → GitHub
+git push origin main
 
-- `myagv_slam_laser.launch` contains a stray quote and is malformed.
-- `myagv_teleop.py` has an invalid exception handler using an undefined `e`.
-- `myAGV.cpp` declares `execute()` as returning `bool` but does not return a value.
-- serial ports are hardcoded rather than parameterized
-- parts of the odometry packet parsing are fragile and should be reviewed before depending on them for high-quality datasets
+# Robot ← GitHub
+ssh ubuntu@192.168.0.185 "cd ~/slam_project && git pull origin main"
+```
 
-## Recommended Mental Model
+---
 
-If you want one simple way to think about this folder, use this:
+## What Is Not Included Here
 
-1. `myagv_odometry` talks to the robot base.
-2. `ydlidar_ros_driver` talks to the laser.
-3. `myagv_teleop` produces manual commands.
-4. `myagv_navigation` launches mapping and navigation on top of those lower-level streams.
-5. everything else is supporting or vendored code.
-
-## If You Extend This For Dataset Collection
-
-The next logical additions would be:
-
-- a dedicated data collection launch file
-- a standard topic list for recording
-- rosbag naming and session metadata conventions
-- parameterized serial device configuration
-- multi-robot namespacing
-- time synchronization and calibration documentation
-- health checks before starting a collection run
-
-## Summary
-
-This folder is the AGV-side ROS runtime stack. Its job is to make the robot move, publish its state, publish LiDAR data, and support local SLAM/navigation.
-
-It is an important foundation for distributed SLAM dataset collection, but it is not yet the full collection system.
+- PhaseSpace ROS driver and mocap integration (Stage 2)
+- Multi-robot namespace management
+- Dataset recording session management and metadata export
+- Time synchronisation across robots

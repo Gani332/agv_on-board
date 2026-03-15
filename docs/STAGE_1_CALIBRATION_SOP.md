@@ -95,11 +95,11 @@ Fill in measured extrinsic values in `calibration/extrinsics.yaml` →
 
 ---
 
-## 1c. RealSense D435i Camera Intrinsics
+## 1c. RealSense D455 Camera Intrinsics
 
 ### Step 1 — Export factory calibration
 
-Connect the D435i to the robot and run:
+Connect the D455 to the robot and run:
 ```bash
 source ~/slam_project/agv_ws/devel/setup.bash
 roslaunch agv_bringup bringup.launch
@@ -170,7 +170,7 @@ Copy `bias_acs` and `bias_gyr` values into `imu_intrinsics.yaml`.
 ### Step 1 — Physical measurement
 
 Measure the x, y, z position of the **camera_link** origin (front face centre of the
-D435i) relative to `base_footprint`.
+D455) relative to `base_footprint`.
 Measure mounting angles (typically 0,0,0 if mounted parallel to floor).
 
 ### Step 2 — Update extrinsics.yaml

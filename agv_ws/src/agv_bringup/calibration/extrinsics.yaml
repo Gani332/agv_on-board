@@ -11,8 +11,8 @@
 #   base_footprint  — robot footprint on the ground (origin of robot)
 #   base_link       — robot body centre (same x,y as footprint, z = height above ground)
 #   laser_frame     — YDLiDAR X2 optical centre
-#   camera_link     — RealSense D435i body
-#   camera_imu_optical_frame — D435i IMU (published by realsense-ros)
+#   camera_link     — RealSense D455 body
+#   camera_imu_optical_frame — D455 IMU (published by realsense-ros)
 #
 # How to measure:
 #   1. Print a 1:1 scale diagram of the AGV top plate.
@@ -66,15 +66,18 @@ base_footprint_to_camera_link:
   yaw:  -1.570796
 
 # camera_link → camera_imu_optical_frame
-# Provided by realsense-ros from factory SDK; verify against SDK output.
-# Command: rostopic echo /camera/extrinsics/depth_to_imu
+# Read from /tf_static: rosrun tf tf_echo camera_link camera_imu_optical_frame
+# Translation: [-0.016, -0.030, 0.007] m
+# Rotation rpy: [-pi/2, 0, -pi/2] (quaternion: [-0.5, 0.5, -0.5, 0.5])
 camera_link_to_imu:
-  x: 0.0        # PLACEHOLDER — read from SDK
-  y: 0.0
-  z: 0.0
-  roll: 0.0
-  pitch: 0.0
-  yaw: 0.0
+  x: -0.016
+  y: -0.030
+  z:  0.007
+  roll:  -1.5708   # -pi/2
+  pitch:  0.0
+  yaw:   -1.5708   # -pi/2
+  source: "factory_sdk_tf_static"
+  date: "2026-03-15"
 
 # Odometry wheel calibration (feeds into odom frame accuracy)
 # Update base.yaml after physical calibration tests.
