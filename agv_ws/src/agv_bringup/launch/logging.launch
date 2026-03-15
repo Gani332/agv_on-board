@@ -1,11 +1,22 @@
 <launch>
 
+  <!-- Dataset recording launch file.
+       Set these env vars before running, e.g.:
+         export ROBOT_NAME=agv1
+         export SCENARIO=corridor_loop
+         export DATESTAMP=$(date +%Y%m%d_%H%M%S)
+       Defaults are provided so the launch will not crash if unset. -->
+
+  <arg name="robot_name" default="$(optenv ROBOT_NAME agv_unknown)" />
+  <arg name="scenario"   default="$(optenv SCENARIO unknown_scenario)" />
+  <arg name="datestamp"  default="$(optenv DATESTAMP 000000_000000)" />
+
   <include file="$(find agv_bringup)/launch/bringup.launch" />
 
   <include file="$(find agv_bringup)/launch/apriltag.launch" />
 
   <node pkg="rosbag" type="record" name="dataset_bagger" output="screen"
-        args="-O $(env HOME)/agv_data/$(env ROBOT_NAME)_$(env SCENARIO)_$(env DATESTAMP)
+        args="-O $(env HOME)/agv_data/$(arg robot_name)_$(arg scenario)_$(arg datestamp)
               /scan
               /odom
               /cmd_vel
@@ -13,7 +24,8 @@
               /tf_static
               /camera/color/image_raw
               /camera/color/camera_info
-              /camera/depth/image_rect_raw
+              /camera/aligned_depth_to_color/image_raw
+              /camera/imu
               /tag_detections" />
 
 </launch>

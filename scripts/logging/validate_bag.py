@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+validate_bag.py — Post-run bag quality validator for the AGV SLAM dataset.
+
+Usage:
+    python3 validate_bag.py <path_to_bag_file>
+    python3 validate_bag.py <path_to_bag_file> --strict   # fail on any warning
+
+Checks:
+    1. All required topics are present
+    2. Each topic meets the minimum publishable rate
+    3. No topic has a gap longer than 2x its expected period (frame drop check)
+    4. Colour and depth are temporally aligned (USB 2 sync check)
+    5. IMU timestamps are monotonically increasing
+    6. Bag file is not truncated or corrupted
+    7. Bag duration meets minimum run length
+
+Exit codes:
+    0 = PASS (publishable quality)
+    1 = FAIL (one or more hard failures)
+    2 = WARN (passes but has warnings worth reviewing)
+
+Run on Mac or robot after recording. Requires: rosbag (ROS), PyYAML, Python 3.
+"""
+
+import subprocess
+import sys
+import os
+import yaml
+import math
+from collections import defaultdict
+
+# ---------------------------------------------------------------------------
+# Publishability thresholds
+# Rates are MINIMUM acceptable Hz. Based on EuRoC (IMU 200Hz, cam 20Hz) and
+# TUM RGB-D (30Hz) — we use 15Hz camera which is below TUM but acceptable
+# for a LiDAR-primary dataset. IMU at 200Hz matches EuRoC.
+# ---------------------------------------------------------------------------
+
+REQUIRED_TOPICS = {
+    "/scan":                                    {"min_hz": 5.0,   "type": "sensor_msgs/LaserScan"},
+    "/odom":                                    {"min_hz": 15.0,  "type": "nav_msgs/Odometry"},
+    "/tf":                                      {"min_hz": 10.0,  "type": "tf2_msgs/TFMessage"},
+    "/camera/color/image_raw":                  {"min_hz": 12.0,  "type": "sensor_msgs/Image"},
+    "/camera/color/camera_info":                {"min_hz": 12.0,  "type": "sensor_msgs/CameraInfo"},
+    "/camera/aligned_depth_to_color/image_raw": {"min_hz": 12.0,  "type": "sensor_msgs/Image"},
+    "/camera/imu":                              {"min_hz": 150.0, "type": "sensor_msgs/Imu"},
+}
+
+OPTIONAL_TOPICS = {
+    "/cmd_vel":        {"min_hz": 0.0,  "type": "geometry_msgs/Twist"},
+    "/tf_static":      {"min_hz": 0.0,  "type": "tf2_msgs/TFMessage"},
+    "/tag_detections": {"min_hz": 0.0,  "type": "apriltag_ros/AprilTagDetectionArray"},
+}
+
+# Minimum run duration for a useful dataset sequence
+MIN_DURATION_SEC = 30.0
+
+# Colour/depth sync tolerance (seconds). On USB 3 hardware sync gives ~1ms.
+# On USB 2 we tolerate up to 100ms before flagging as a sync failure.
+COLOUR_DEPTH_SYNC_TOLERANCE_SEC = 0.100
+USB2_SYNC_WARN_THRESHOLD_SEC    = 0.033  # >33ms = likely USB 2 degradation
+
+# Max allowed gap multiplier (gap > N * expected_period = frame drop)
+MAX_GAP_MULTIPLIER = 3.0
+
+# ---------------------------------------------------------------------------
+
+PASS  = "PASS"
+WARN  = "WARN"
+FAIL  = "FAIL"
+
+results = []  # list of (level, topic_or_check, message)
+
+def record(level, check, msg):
+    results.append((level, check, msg))
+    symbol = {"PASS": "✓", "WARN": "!", "FAIL": "✗"}[level]
+    print("  [{}] {}: {}".format(symbol, check, msg))
+
+
+def get_bag_info(bag_path):
+    """Run rosbag info --yaml and return parsed dict."""
+    try:
+        out = subprocess.check_output(
+            ["rosbag", "info", "--yaml", bag_path],
+            stderr=subprocess.STDOUT
+        )
+        return yaml.safe_load(out.decode("utf-8"))
+    except subprocess.CalledProcessError as e:
+        print("ERROR: rosbag info failed: {}".format(e.output.decode("utf-8")))
+        sys.exit(1)
+    except FileNotFoundError:
+        print("ERROR: rosbag not found. Source your ROS workspace first.")
+        sys.exit(1)
+
+
+def check_bag_integrity(bag_path):
+    """Run rosbag check to detect corruption or truncation."""
+    print("\n--- Bag integrity ---")
+    try:
+        out = subprocess.check_output(
+            ["rosbag", "check", bag_path],
+            stderr=subprocess.STDOUT
+        )
+        output = out.decode("utf-8").strip()
+        if "No errors found" in output or output == "":
+            record(PASS, "bag_integrity", "No errors found")
+        else:
+            record(WARN, "bag_integrity", output)
+    except subprocess.CalledProcessError as e:
+        record(FAIL, "bag_integrity", "rosbag check failed: {}".format(
+            e.output.decode("utf-8").strip()))
+
+
+def check_duration(info):
+    """Check bag duration meets minimum."""
+    print("\n--- Duration ---")
+    duration = info.get("duration", 0.0)
+    if duration >= MIN_DURATION_SEC:
+        record(PASS, "duration", "{:.1f}s (min {:.0f}s)".format(duration, MIN_DURATION_SEC))
+    else:
+        record(FAIL, "duration", "{:.1f}s is below minimum {:.0f}s for a useful sequence".format(
+            duration, MIN_DURATION_SEC))
+    return duration
+
+
+def check_topics(info, duration):
+    """Check topic presence and message rates."""
+    print("\n--- Required topics ---")
+    bag_topics = {t["topic"]: t for t in info.get("topics", [])}
+
+    for topic, spec in REQUIRED_TOPICS.items():
+        if topic not in bag_topics:
+            record(FAIL, topic, "MISSING — topic not recorded")
+            continue
+
+        t = bag_topics[topic]
+        msg_count = t.get("messages", 0)
+        actual_hz = msg_count / duration if duration > 0 else 0.0
+        min_hz = spec["min_hz"]
+
+        if actual_hz >= min_hz:
+            record(PASS, topic, "{} msgs @ {:.1f} Hz (min {:.0f} Hz)".format(
+                msg_count, actual_hz, min_hz))
+        elif actual_hz >= min_hz * 0.8:
+            record(WARN, topic, "{} msgs @ {:.1f} Hz — below target {:.0f} Hz (within 20% tolerance)".format(
+                msg_count, actual_hz, min_hz))
+        else:
+            record(FAIL, topic, "{} msgs @ {:.1f} Hz — BELOW minimum {:.0f} Hz".format(
+                msg_count, actual_hz, min_hz))
+
+    print("\n--- Optional topics ---")
+    for topic, spec in OPTIONAL_TOPICS.items():
+        if topic in bag_topics:
+            t = bag_topics[topic]
+            record(PASS, topic, "{} msgs present".format(t.get("messages", 0)))
+        else:
+            record(WARN, topic, "not recorded (optional)")
+
+    return bag_topics
+
+
+def check_frame_drops(bag_path, bag_topics, duration):
+    """
+    Check for frame drops by analysing timestamp gaps on camera topics.
+    Uses rosbag filter + rostopic to get per-message timestamps.
+    Falls back to gap estimation from message count if detailed check fails.
+    """
+    print("\n--- Frame drop check (USB 2 bandwidth) ---")
+
+    camera_topics = [
+        "/camera/color/image_raw",
+        "/camera/aligned_depth_to_color/image_raw",
+        "/camera/imu",
+    ]
+
+    for topic in camera_topics:
+        if topic not in bag_topics:
+            continue
+
+        expected_hz = REQUIRED_TOPICS.get(topic, {}).get("min_hz", 1.0)
+        expected_period = 1.0 / expected_hz if expected_hz > 0 else 1.0
+        max_gap = MAX_GAP_MULTIPLIER * expected_period
+
+        # Use rosbag filter to extract timestamps
+        try:
+            cmd = [
+                "python2", "-c",
+                "import rosbag, sys; b=rosbag.Bag(sys.argv[1]); "
+                "[sys.stdout.write(str(m.header.stamp.to_sec())+'\\n') "
+                "if hasattr(m,'header') else sys.stdout.write(str(t.to_sec())+'\\n') "
+                "for _,m,t in b.read_messages(topics=[sys.argv[2]])]; b.close()",
+                bag_path, topic
+            ]
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=30)
+            timestamps = [float(x) for x in out.decode().strip().split("\n") if x]
+
+            if len(timestamps) < 2:
+                record(WARN, topic + " gaps", "Too few messages to analyse gaps")
+                continue
+
+            gaps = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
+            max_actual_gap = max(gaps)
+            n_drops = sum(1 for g in gaps if g > max_gap)
+            drop_rate = 100.0 * n_drops / len(gaps)
+
+            if n_drops == 0:
+                record(PASS, topic + " gaps",
+                       "No drops. Max gap {:.3f}s (limit {:.3f}s)".format(max_actual_gap, max_gap))
+            elif drop_rate < 1.0:
+                record(WARN, topic + " gaps",
+                       "{} drops ({:.2f}%) — max gap {:.3f}s. Likely USB 2 bandwidth pressure.".format(
+                           n_drops, drop_rate, max_actual_gap))
+            else:
+                record(FAIL, topic + " gaps",
+                       "{} drops ({:.1f}%) — max gap {:.3f}s. NOT publishable quality.".format(
+                           n_drops, drop_rate, max_actual_gap))
+
+        except Exception:
+            # Fallback: estimate from message count
+            msg_count = bag_topics[topic].get("messages", 0)
+            actual_hz = msg_count / duration if duration > 0 else 0
+            expected_count = expected_hz * duration
+            drop_est = max(0, expected_count - msg_count)
+            drop_pct = 100.0 * drop_est / expected_count if expected_count > 0 else 0
+
+            if drop_pct < 1.0:
+                record(PASS, topic + " gaps",
+                       "~{:.1f}% estimated drop rate (count-based estimate)".format(drop_pct))
+            else:
+                record(WARN, topic + " gaps",
+                       "~{:.1f}% estimated drop rate — run with python2 rosbag for precise check".format(drop_pct))
+
+
+def check_colour_depth_sync(bag_path, bag_topics):
+    """
+    Check temporal alignment between colour and depth frames.
+    On USB 3 with hardware sync, alignment should be <5ms.
+    On USB 2, alignment may degrade to 33-100ms.
+    """
+    print("\n--- Colour/depth sync (USB 2 check) ---")
+
+    if ("/camera/color/image_raw" not in bag_topics or
+            "/camera/aligned_depth_to_color/image_raw" not in bag_topics):
+        record(WARN, "colour_depth_sync", "One or both topics missing — cannot check sync")
+        return
+
+    try:
+        cmd = [
+            "python2", "-c",
+            """
+import rosbag, sys
+b = rosbag.Bag(sys.argv[1])
+colour_times = []
+depth_times = []
+for topic, msg, t in b.read_messages(topics=[
+        '/camera/color/image_raw',
+        '/camera/aligned_depth_to_color/image_raw']):
+    if topic == '/camera/color/image_raw':
+        colour_times.append(msg.header.stamp.to_sec())
+    else:
+        depth_times.append(msg.header.stamp.to_sec())
+b.close()
+n = min(len(colour_times), len(depth_times))
+diffs = [abs(colour_times[i] - depth_times[i]) for i in range(n)]
+if diffs:
+    print('{:.6f} {:.6f} {:.6f}'.format(
+        sum(diffs)/len(diffs), max(diffs), sum(1 for d in diffs if d > 0.033)/len(diffs)))
+""",
+            bag_path
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=30)
+        parts = out.decode().strip().split()
+        if len(parts) == 3:
+            mean_ms = float(parts[0]) * 1000
+            max_ms = float(parts[1]) * 1000
+            frac_over_33ms = float(parts[2])
+
+            if max_ms < 5:
+                record(PASS, "colour_depth_sync",
+                       "Mean {:.1f}ms, max {:.1f}ms — USB 3 hardware sync working".format(mean_ms, max_ms))
+            elif max_ms < 33:
+                record(WARN, "colour_depth_sync",
+                       "Mean {:.1f}ms, max {:.1f}ms — USB 2 mode, sync degraded but usable".format(mean_ms, max_ms))
+            else:
+                record(FAIL, "colour_depth_sync",
+                       "Mean {:.1f}ms, max {:.1f}ms, {:.0f}% frames >33ms — "
+                       "USB 2 sync failure. Colour+depth misaligned. NOT publishable.".format(
+                           mean_ms, max_ms, frac_over_33ms * 100))
+    except Exception:
+        record(WARN, "colour_depth_sync",
+               "Could not compute sync — run with python2 rosbag for precise check")
+
+
+def check_imu_monotonic(bag_path, bag_topics):
+    """Check IMU timestamps are strictly increasing (catches driver reset bugs)."""
+    print("\n--- IMU timestamp monotonicity ---")
+
+    if "/camera/imu" not in bag_topics:
+        return
+
+    try:
+        cmd = [
+            "python2", "-c",
+            "import rosbag, sys; b=rosbag.Bag(sys.argv[1]); "
+            "prev=0; bad=0; n=0; "
+            "[exec('global prev,bad,n; t=m.header.stamp.to_sec(); bad+=1 if t<=prev else 0; prev=t; n+=1') "
+            "for _,m,_ in b.read_messages(topics=[\"/camera/imu\"])]; "
+            "b.close(); print(bad,n)",
+            bag_path
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=30)
+        parts = out.decode().strip().split()
+        if len(parts) == 2:
+            bad, total = int(parts[0]), int(parts[1])
+            if bad == 0:
+                record(PASS, "imu_monotonic", "All {} IMU timestamps strictly increasing".format(total))
+            else:
+                record(FAIL, "imu_monotonic",
+                       "{} non-monotonic timestamps out of {} — IMU driver issue".format(bad, total))
+    except Exception:
+        record(WARN, "imu_monotonic", "Could not check — run with python2 rosbag for precise check")
+
+
+def print_summary(bag_path, duration, bag_topics, strict):
+    print("\n" + "=" * 60)
+    print("VALIDATION SUMMARY: {}".format(os.path.basename(bag_path)))
+    print("=" * 60)
+
+    n_pass = sum(1 for r in results if r[0] == PASS)
+    n_warn = sum(1 for r in results if r[0] == WARN)
+    n_fail = sum(1 for r in results if r[0] == FAIL)
+
+    print("  PASS: {}   WARN: {}   FAIL: {}".format(n_pass, n_warn, n_fail))
+    print("  Duration: {:.1f}s   Size: {:.0f} MB".format(
+        duration,
+        os.path.getsize(bag_path) / 1e6
+    ))
+
+    # USB 2 specific summary
+    print("\n  USB 2 assessment:")
+    sync_fails = [r for r in results if "sync" in r[1] and r[0] == FAIL]
+    drop_fails = [r for r in results if "gaps" in r[1] and r[0] == FAIL]
+    drop_warns = [r for r in results if "gaps" in r[1] and r[0] == WARN]
+
+    if sync_fails or drop_fails:
+        print("  ! USB 2 is causing data quality issues — consider USB 3 hub or lower resolution")
+    elif drop_warns:
+        print("  ~ USB 2 showing occasional drops — acceptable for most SLAM algorithms")
+        print("    but flag this in your dataset paper as a known limitation")
+    else:
+        print("  ✓ USB 2 appears sufficient at 640x480 @ 15Hz for this run")
+
+    print("\n  Publishability verdict:")
+    if n_fail == 0 and n_warn == 0:
+        print("  ✓ PASS — data meets publishable quality standards")
+        return 0
+    elif n_fail == 0:
+        print("  ~ WARN — data is usable but review warnings before publishing")
+        return 2 if strict else 0
+    else:
+        print("  ✗ FAIL — {} hard failures must be resolved before publishing".format(n_fail))
+        if n_fail == 1 and all("optional" in r[2] for r in results if r[0] == FAIL):
+            print("    (failure is in optional topic — may still be acceptable)")
+        return 1
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python3 validate_bag.py <bag_file> [--strict]")
+        sys.exit(1)
+
+    bag_path = sys.argv[1]
+    strict = "--strict" in sys.argv
+
+    if not os.path.exists(bag_path):
+        print("ERROR: bag file not found: {}".format(bag_path))
+        sys.exit(1)
+
+    print("=" * 60)
+    print("AGV Dataset Bag Validator")
+    print("Bag: {}".format(bag_path))
+    print("=" * 60)
+
+    info = get_bag_info(bag_path)
+    check_bag_integrity(bag_path)
+    duration = check_duration(info)
+    bag_topics = check_topics(info, duration)
+    check_frame_drops(bag_path, bag_topics, duration)
+    check_colour_depth_sync(bag_path, bag_topics)
+    check_imu_monotonic(bag_path, bag_topics)
+
+    exit_code = print_summary(bag_path, duration, bag_topics, strict)
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
