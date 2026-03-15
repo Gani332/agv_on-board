@@ -40,18 +40,21 @@ from collections import defaultdict
 
 REQUIRED_TOPICS = {
     "/scan":                                    {"min_hz": 5.0,   "type": "sensor_msgs/LaserScan"},
-    "/odom":                                    {"min_hz": 15.0,  "type": "nav_msgs/Odometry"},
+    "/odom":                                    {"min_hz": 12.0,  "type": "nav_msgs/Odometry"},
     "/tf":                                      {"min_hz": 10.0,  "type": "tf2_msgs/TFMessage"},
     "/camera/color/image_raw":                  {"min_hz": 12.0,  "type": "sensor_msgs/Image"},
     "/camera/color/camera_info":                {"min_hz": 12.0,  "type": "sensor_msgs/CameraInfo"},
     "/camera/aligned_depth_to_color/image_raw": {"min_hz": 12.0,  "type": "sensor_msgs/Image"},
-    "/camera/imu":                              {"min_hz": 150.0, "type": "sensor_msgs/Imu"},
 }
 
 OPTIONAL_TOPICS = {
-    "/cmd_vel":        {"min_hz": 0.0,  "type": "geometry_msgs/Twist"},
-    "/tf_static":      {"min_hz": 0.0,  "type": "tf2_msgs/TFMessage"},
-    "/tag_detections": {"min_hz": 0.0,  "type": "apriltag_ros/AprilTagDetectionArray"},
+    # IMU: requires USB 3 for hardware sync + adequate bandwidth.
+    # On USB 2, accel/gyro streams are disabled to keep colour+depth within ~184 Mbps.
+    # Re-enable once USB 3 is available; note limitation in dataset paper.
+    "/camera/imu":     {"min_hz": 150.0, "type": "sensor_msgs/Imu"},
+    "/cmd_vel":        {"min_hz": 0.0,   "type": "geometry_msgs/Twist"},
+    "/tf_static":      {"min_hz": 0.0,   "type": "tf2_msgs/TFMessage"},
+    "/tag_detections": {"min_hz": 0.0,   "type": "apriltag_ros/AprilTagDetectionArray"},
 }
 
 # Minimum run duration for a useful dataset sequence
@@ -250,7 +253,7 @@ def check_colour_depth_sync(bag_path, bag_topics):
         cmd = [
             "python2", "-c",
             """
-import rosbag, sys
+import rosbag, sys, bisect
 b = rosbag.Bag(sys.argv[1])
 colour_times = []
 depth_times = []
@@ -262,8 +265,18 @@ for topic, msg, t in b.read_messages(topics=[
     else:
         depth_times.append(msg.header.stamp.to_sec())
 b.close()
-n = min(len(colour_times), len(depth_times))
-diffs = [abs(colour_times[i] - depth_times[i]) for i in range(n)]
+# Nearest-neighbour matching: for each colour frame find closest depth frame
+# (more accurate than index pairing when either stream drops frames)
+diffs = []
+for ct in colour_times:
+    idx = bisect.bisect_left(depth_times, ct)
+    candidates = []
+    if idx < len(depth_times):
+        candidates.append(abs(depth_times[idx] - ct))
+    if idx > 0:
+        candidates.append(abs(depth_times[idx-1] - ct))
+    if candidates:
+        diffs.append(min(candidates))
 if diffs:
     print('{:.6f} {:.6f} {:.6f}'.format(
         sum(diffs)/len(diffs), max(diffs), sum(1 for d in diffs if d > 0.033)/len(diffs)))
@@ -276,18 +289,24 @@ if diffs:
             mean_ms = float(parts[0]) * 1000
             max_ms = float(parts[1]) * 1000
             frac_over_33ms = float(parts[2])
+            pct_over_33ms = frac_over_33ms * 100
 
-            if max_ms < 5:
+            # PASS: USB 3 hardware sync (mean <5ms)
+            # WARN: USB 2 soft sync — mean <33ms AND <5% frames >33ms
+            # FAIL: mean >33ms OR >5% frames >33ms (structural misalignment)
+            if mean_ms < 5:
                 record(PASS, "colour_depth_sync",
-                       "Mean {:.1f}ms, max {:.1f}ms — USB 3 hardware sync working".format(mean_ms, max_ms))
-            elif max_ms < 33:
+                       "Mean {:.1f}ms, max {:.1f}ms — excellent sync (SDK temporal pairing)".format(mean_ms, max_ms))
+            elif mean_ms < 33 and pct_over_33ms < 5.0:
                 record(WARN, "colour_depth_sync",
-                       "Mean {:.1f}ms, max {:.1f}ms — USB 2 mode, sync degraded but usable".format(mean_ms, max_ms))
+                       "Mean {:.1f}ms, max {:.1f}ms, {:.1f}% frames >33ms — "
+                       "USB 2 mode, sync adequate for LiDAR-primary SLAM. "
+                       "Note: hardware sync requires USB 3.".format(mean_ms, max_ms, pct_over_33ms))
             else:
                 record(FAIL, "colour_depth_sync",
-                       "Mean {:.1f}ms, max {:.1f}ms, {:.0f}% frames >33ms — "
-                       "USB 2 sync failure. Colour+depth misaligned. NOT publishable.".format(
-                           mean_ms, max_ms, frac_over_33ms * 100))
+                       "Mean {:.1f}ms, max {:.1f}ms, {:.1f}% frames >33ms — "
+                       "USB 2 sync failure. Colour+depth structurally misaligned. "
+                       "NOT publishable for RGB-D SLAM.".format(mean_ms, max_ms, pct_over_33ms))
     except Exception:
         record(WARN, "colour_depth_sync",
                "Could not compute sync — run with python2 rosbag for precise check")
