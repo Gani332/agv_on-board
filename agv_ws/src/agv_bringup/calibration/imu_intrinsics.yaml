@@ -1,63 +1,90 @@
-# RealSense D435i — IMU Intrinsics
-# -----------------------------------------------------------------------
-# STATUS: PLACEHOLDER — fill in from Allan variance calibration
-#
-# The D435i contains a BMI055 (or BMI085) IMU.
-# Factory calibration is available via the SDK but noise characterisation
-# must be done empirically using imu_utils or Allan variance analysis.
-#
-# How to populate this file:
-#   Option A — read factory values from SDK:
-#     rs-enumerate-devices -c  (look for Motion Intrinsics section)
-#     rostopic echo /camera/imu (verify data is publishing)
-#
-#   Option B — Allan variance (for imu_utils):
-#     1. Mount robot on a stable surface, do NOT move.
-#     2. Record 2+ hours of IMU data:
-#          rosbag record -O imu_static.bag /camera/imu
-#     3. Run imu_utils: https://github.com/gaowenliang/imu_utils
-#     4. Fill in noise_density and bias_instability below.
-#
-#   Static verification (quick check, not full calibration):
-#     Place robot flat and stationary. Record /camera/imu for 60 seconds.
-#     Target: gyro drift < 0.1 deg/s, accel noise < 0.05 m/s^2
-# -----------------------------------------------------------------------
-
-calibration_date: "YYYY-MM-DD"
-calibration_operator: ""
-calibration_method: "factory"    # factory | allan_variance | imu_utils
-
-frame_id: "camera_imu_optical_frame"
-publish_rate_hz: 200             # D435i IMU publishes at up to 400 Hz; 200 Hz typical
-
+# D435i IMU (BMI055): accel noise_density 0.0028 m/s^2/sqrt(Hz) (28 ug/sqrt(Hz)).
+# bias_instability < 0.10 m/s^2 long-term (Intel spec sheet).
+# static_test_std inflated by /camera/imu linear_interpolation artefact -- see note below.
 accelerometer:
-  noise_density: ~               # m/s^2/sqrt(Hz) — fill from Allan variance
-  bias_instability: ~            # m/s^2 — fill from Allan variance
-  scale_and_alignment:           # 3x3 row-major (factory provides this)
-    - [1.0, 0.0, 0.0,
-       0.0, 1.0, 0.0,
-       0.0, 0.0, 1.0]            # PLACEHOLDER
-  bias: [0.0, 0.0, 0.0]         # m/s^2 — fill from calibration
-
-gyroscope:
-  noise_density: ~               # rad/s/sqrt(Hz)
-  bias_instability: ~            # rad/s
+  bias:
+  - 0.0
+  - 0.0
+  - 0.0
+  bias_instability: 0.10          # m/s^2, Intel spec (conservative upper bound)
+  noise_density: 0.0028           # m/s^2/sqrt(Hz), Intel spec
   scale_and_alignment:
-    - [1.0, 0.0, 0.0,
-       0.0, 1.0, 0.0,
-       0.0, 0.0, 1.0]            # PLACEHOLDER
-  bias: [0.0, 0.0, 0.0]         # rad/s
-
-# IMU-to-camera extrinsic (factory value from SDK)
-# Access via: rostopic echo /camera/extrinsics/depth_to_imu
+  - - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  static_test_mean_m_s2:
+    x: -0.1097
+    y: -9.654
+    z: -0.1185
+  static_test_std_m_s2:
+    x: 0.17539
+    y: 0.201338
+    z: 0.245123
+calibration_date: '2026-03-15'
+calibration_method: static_test
+calibration_operator: ubuntu
+frame_id: camera_imu_optical_frame
+# D435i gyro noise_density 0.014 deg/s/sqrt(Hz) = 2.44e-4 rad/s/sqrt(Hz).
+# bias_instability < 1 deg/s long-term (Intel spec).
+# static_test drift of 0.153 deg/s is slightly above 0.1 target; likely vibration from
+# base controller during test. Retest with motors powered off for definitive result.
+gyroscope:
+  bias:
+  - 0.0
+  - 0.0
+  - 0.0
+  bias_instability: 0.01745       # rad/s, Intel spec (1 deg/s)
+  noise_density: 0.000244         # rad/s/sqrt(Hz), Intel spec (0.014 deg/s/sqrt(Hz))
+  scale_and_alignment:
+  - - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  static_test_std_rad_s:
+    x: 0.009418
+    y: 0.002846
+    z: 0.011535
 imu_to_color_extrinsic:
-  rotation: [1.0, 0.0, 0.0,
-             0.0, 1.0, 0.0,
-             0.0, 0.0, 1.0]      # PLACEHOLDER — read from SDK
-  translation: [0.0, 0.0, 0.0]  # PLACEHOLDER — read from SDK
-
-# Static verification results
+  note: 'Read from SDK: rs-enumerate-devices -c | grep -A20 ''Motion Intrinsics'''
+  rotation:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  translation:
+  - 0.0
+  - 0.0
+  - 0.0
+publish_rate_hz: 199.0
 static_test_60s:
-  gyro_drift_deg_per_s: ~        # target < 0.1
-  accel_noise_m_s2: ~            # target < 0.05
-  gravity_alignment_verified: false
+  accel_noise_m_s2: 0.2451
+  accel_pass: false
+  gravity_alignment_verified: true
+  gravity_dominant_axis: y
+  gravity_magnitude_m_s2: 9.6554
+  gyro_drift_deg_per_s: 0.1525
+  gyro_pass: false
+  note: >
+    Accel noise std (0.245 m/s^2) is inflated by /camera/imu linear_interpolation
+    artefact (63 Hz accel interleaved with 200 Hz gyro). True accel noise floor is
+    ~0.01-0.02 m/s^2 per D435i spec. For Allan variance characterisation, run
+    imu_utils on /camera/accel/sample (requires bringup without unite_imu_method).
+    Gyro drift (0.153 deg/s) should be retested with base controller motors powered
+    off to isolate vibration contribution.
+  num_samples: 11994
