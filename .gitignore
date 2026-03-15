@@ -1,0 +1,17 @@
+# ROS Build Artifacts
+build/
+devel/
+install/
+logs/
+*.pyc
+
+# IDEs
+.vscode/
+.idea/
+
+# Dataset files
+*.bag
+*.pgm
+
+# macOS
+.DS_Store

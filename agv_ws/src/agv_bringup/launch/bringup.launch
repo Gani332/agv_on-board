@@ -1,0 +1,21 @@
+<launch>
+
+  <!-- 1. Start the AGV base driver (motion + odom + TF) -->
+  <node pkg="myagv_odometry" type="myagv_odometry_node" name="myagv_odometry_node" output="screen" />
+
+  <!-- 2. Start the YDLIDAR X2 driver -->
+  <include file="$(find ydlidar_ros_driver)/launch/X2.launch" />
+
+  <!-- NOTE:
+       - myagv_odometry_node publishes /odom and TF (odom → base_footprint)
+       - X2.launch publishes laser_frame and scans
+       - No additional TF broadcasters needed here
+  -->
+
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+      <arg name="align_depth" value="true"/>
+      <arg name="enable_pointcloud" value="false"/>
+  </include>
+
+</launch>
+

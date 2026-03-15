@@ -1,0 +1,19 @@
+<launch>
+
+  <include file="$(find agv_bringup)/launch/bringup.launch" />
+
+  <include file="$(find agv_bringup)/launch/apriltag.launch" />
+
+  <node pkg="rosbag" type="record" name="dataset_bagger" output="screen"
+        args="-O $(env HOME)/agv_data/$(env ROBOT_NAME)_$(env SCENARIO)_$(env DATESTAMP)
+              /scan
+              /odom
+              /cmd_vel
+              /tf
+              /tf_static
+              /camera/color/image_raw
+              /camera/color/camera_info
+              /camera/depth/image_rect_raw
+              /tag_detections" />
+
+</launch>
