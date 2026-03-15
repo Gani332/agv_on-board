@@ -25,7 +25,7 @@
               /camera/color/image_raw
               /camera/color/camera_info
               /camera/aligned_depth_to_color/image_raw
-              /camera/imu
               /tag_detections" />
+              <!-- /camera/imu omitted: IMU requires USB 3.0; re-enable when USB 3 available -->
 
 </launch>

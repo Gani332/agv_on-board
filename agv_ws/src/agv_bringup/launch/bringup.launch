@@ -19,25 +19,25 @@
   <node pkg="tf" type="static_transform_publisher" name="base_to_camera_link"
         args="-0.132025 0.000153 0.187925 -1.570796 -0.007906 1.570796 /base_footprint /camera_link 40" />
 
-  <!-- RealSense D455: 640x480 @ 15 Hz colour + depth, IMU enabled.
+  <!-- RealSense D455: 640x480 @ 15 Hz colour + depth.
+       USB 2.0 workaround: IMU streams disabled to stay within USB 2 bandwidth.
+       Colour (110 Mbps) + Depth (74 Mbps) = ~184 Mbps, within USB 2 practical limit.
        align_depth: aligns depth to colour frame (required for RGB-D SLAM).
-       enable_sync: hardware-syncs colour+depth frames (reduces motion artefacts).
-       unite_imu_method: "linear_interpolation" combines accel+gyro into one IMU message. -->
+       enable_sync: disabled on USB 2 (hardware sync requires USB 3 control channel).
+       NOTE: When USB 3 is available, re-enable accel/gyro and unite_imu_method. -->
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
       <arg name="align_depth"         value="true"/>
       <arg name="enable_pointcloud"   value="false"/>
-      <arg name="enable_sync"         value="true"/>
+      <arg name="enable_sync"         value="false"/>
       <arg name="color_width"         value="640"/>
       <arg name="color_height"        value="480"/>
       <arg name="color_fps"           value="15"/>
       <arg name="depth_width"         value="640"/>
       <arg name="depth_height"        value="480"/>
       <arg name="depth_fps"           value="15"/>
-      <arg name="enable_accel"        value="true"/>
-      <arg name="enable_gyro"         value="true"/>
-      <arg name="accel_fps"           value="100"/>
-      <arg name="gyro_fps"            value="200"/>
-      <arg name="unite_imu_method"    value="linear_interpolation"/>
+      <arg name="enable_accel"        value="false"/>
+      <arg name="enable_gyro"         value="false"/>
+      <arg name="unite_imu_method"    value="none"/>
   </include>
 
 </launch>
