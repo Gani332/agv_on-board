@@ -12,14 +12,14 @@
   <include file="$(find ydlidar_ros_driver)/launch/X2.launch" />
 
   <!-- 3. Static TF: base_footprint → camera_link
-       Values derived from CAD (assembly.urdf, robot_description package).
-       Compound of base_to_mount (-0.126025, 0.030099, 0.117186 m, rpy=π/2,-0.0079,-π/2)
-       and mount_to_camera (0.030505, 0.070500, 0.006000 m, rpy=0,0,0).
-       Result: xyz=(-0.132025, 0.000153, 0.187925), rpy=(π/2, -0.007906, -π/2).
-       NOTE: laser_frame TF is published by X2.launch with PLACEHOLDER values (z=0.2m, yaw=π).
-             Measure the actual LiDAR mounting height and forward offset and update X2.launch. -->
+       Measured 2026-03-15: L-bracket mount, camera lens centre is 178mm in front of
+       led_marker_link (−X is forward in base_link frame), same z-height as led_marker_link.
+         led_marker_link: (-0.015025, 0.002880, 0.117401) from assembly.urdf
+         offset: (−0.178, 0, +0.001) m → camera_link: (-0.193025, 0.002880, 0.118401)
+       Orientation unchanged from original CAD: rpy=(π/2, -0.007906, -π/2).
+       NOTE: laser_frame TF is published by X2.launch (z=0.10m measured, yaw=0). -->
   <node pkg="tf" type="static_transform_publisher" name="base_to_camera_link"
-        args="-0.132025 0.000153 0.187925 -1.570796 -0.007906 1.570796 /base_footprint /camera_link 40" />
+        args="-0.193025 0.002880 0.118401 -1.570796 -0.007906 1.570796 /base_footprint /camera_link 40" />
 
   <!-- RealSense D435i: 640x480 @ 15 Hz colour + depth, IMU enabled.
        align_depth: aligns depth to colour frame (required for RGB-D SLAM).
