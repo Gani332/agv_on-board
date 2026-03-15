@@ -166,10 +166,20 @@ def check_topics(info, duration):
     return bag_topics
 
 
+def _ros2_env():
+    """Return an env dict with ROS Melodic python2 paths set for subprocess calls."""
+    env = os.environ.copy()
+    ros_python_path = "/opt/ros/melodic/lib/python2.7/dist-packages"
+    existing = env.get("PYTHONPATH", "")
+    if ros_python_path not in existing:
+        env["PYTHONPATH"] = ros_python_path + (":" + existing if existing else "")
+    return env
+
+
 def check_frame_drops(bag_path, bag_topics, duration):
     """
     Check for frame drops by analysing timestamp gaps on camera topics.
-    Uses rosbag filter + rostopic to get per-message timestamps.
+    Reads message timestamps via python2 rosbag API (ROS Melodic is py2-only).
     Falls back to gap estimation from message count if detailed check fails.
     """
     print("\n--- Frame drop check (USB 2 bandwidth) ---")
@@ -193,7 +203,7 @@ def check_frame_drops(bag_path, bag_topics, duration):
         expected_period = 1.0 / target_hz if target_hz > 0 else 1.0
         max_gap = MAX_GAP_MULTIPLIER * expected_period
 
-        # Use rosbag filter to extract timestamps
+        # Use python2 rosbag API to extract per-message timestamps
         try:
             cmd = [
                 "python2", "-c",
@@ -203,7 +213,8 @@ def check_frame_drops(bag_path, bag_topics, duration):
                 "for _,m,t in b.read_messages(topics=[sys.argv[2]])]; b.close()",
                 bag_path, topic
             ]
-            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=30)
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
+                                          timeout=60, env=_ros2_env())
             timestamps = [float(x) for x in out.decode().strip().split("\n") if x]
 
             if len(timestamps) < 2:
@@ -238,19 +249,18 @@ def check_frame_drops(bag_path, bag_topics, duration):
                            n_drops, drop_rate, max_actual_gap))
 
         except Exception:
-            # Fallback: estimate from message count
+            # Fallback: estimate from message count only (no per-frame gap analysis)
             msg_count = bag_topics[topic].get("messages", 0)
-            actual_hz = msg_count / duration if duration > 0 else 0
-            expected_count = expected_hz * duration
+            expected_count = target_hz * duration
             drop_est = max(0, expected_count - msg_count)
             drop_pct = 100.0 * drop_est / expected_count if expected_count > 0 else 0
 
             if drop_pct < 1.0:
                 record(PASS, topic + " gaps",
-                       "~{:.1f}% estimated drop rate (count-based estimate)".format(drop_pct))
+                       "~{:.1f}% estimated drop rate (count-based; python2/rosbag unavailable for gap analysis)".format(drop_pct))
             else:
                 record(WARN, topic + " gaps",
-                       "~{:.1f}% estimated drop rate — run with python2 rosbag for precise check".format(drop_pct))
+                       "~{:.1f}% estimated drop rate (count-based; python2/rosbag unavailable for gap analysis)".format(drop_pct))
 
 
 def check_colour_depth_sync(bag_path, bag_topics):
@@ -300,7 +310,8 @@ if diffs:
 """,
             bag_path
         ]
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=30)
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
+                                      timeout=60, env=_ros2_env())
         parts = out.decode().strip().split()
         if len(parts) == 3:
             mean_ms = float(parts[0]) * 1000
@@ -346,7 +357,8 @@ def check_imu_monotonic(bag_path, bag_topics):
             "b.close(); print(bad,n)",
             bag_path
         ]
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=30)
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
+                                      timeout=30, env=_ros2_env())
         parts = out.decode().strip().split()
         if len(parts) == 2:
             bad, total = int(parts[0]), int(parts[1])

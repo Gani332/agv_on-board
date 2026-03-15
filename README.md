@@ -165,11 +165,11 @@ Source: `assembly.urdf` CAD. An L-bracket mount was trialled 2026-03-15 but caus
 | `/camera/imu` | 200 Hz | — (disabled) | `sensor_msgs/Imu` | **USB 2 only — see note below** |
 | `/tag_detections` | on demand | — | `apriltag_ros/AprilTagDetectionArray` | `apriltag_ros` |
 
-Measured Hz from 2026-03-15 test bag (62s, static). `/odom` lower than target — base controller serial output rate; further investigation pending.
+Measured Hz from 2026-03-15 test bags. `/odom` lower than target — base controller serial output rate; further investigation pending.
 
 ### USB 2 limitation
 
-The D455 is connected via USB 2.0. At USB 2 bandwidth (~480 Mbps practical ~280 Mbps):
+The D455 is connected via USB 2.0. At USB 2 bandwidth (~480 Mbps theoretical, ~200 Mbps practical for bulk transfers):
 
 - Colour 640×480@15Hz ≈ 110 Mbps
 - Depth 640×480@15Hz ≈ 74 Mbps
@@ -178,8 +178,10 @@ The D455 is connected via USB 2.0. At USB 2 bandwidth (~480 Mbps practical ~280 
 
 `bringup.launch` therefore disables `enable_accel`, `enable_gyro`, and `enable_sync`. Colour and depth stream reliably. IMU is unavailable until a USB 3 port/hub is available. This is noted as a known limitation in the dataset paper.
 
-**Validated measured rates** (2026-03-15, 62s test bag):
-`/scan` 17.7 Hz · `/odom` 12.7 Hz · colour 14.9 Hz · depth 14.8 Hz · colour/depth sync mean 0.3 ms
+**Validated measured rates** (2026-03-15, 119s static test bag):
+`/scan` 17.2 Hz · `/odom` 12.6 Hz · colour 15.0 Hz · depth 14.9 Hz · colour/depth sync mean 0.3 ms · max sync 66.9 ms · frame drops ~0%
+
+**Motion validation:** pending — requires a 2-minute drive session recorded via `logging.launch` (not manual `rosbag record`).
 
 ---
 
