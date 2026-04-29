@@ -1,273 +1,351 @@
 # AGV On-Board Stack
 
-On-vehicle ROS stack for the AGV robots used in the distributed multi-robot SLAM dataset project. This is the robot-side sensing, control, and dataset collection layer.
+Robot-side ROS Melodic stack for AGV data collection in the multi-robot SLAM dataset project.
 
----
-
-## Workspace Layout
-
-```
-agv_on-board/
-├── myagv_ros/                  # Vendor robot workspace (base, LiDAR, URDF)
-│   └── src/
-│       ├── myagv_odometry/     # Serial interface to AGV base + odom publisher
-│       ├── ydlidar_ros_driver/ # YDLiDAR X2 driver + laser_frame TF
-│       ├── myagv_teleop/       # Keyboard teleoperation
-│       ├── myagv_navigation/   # gmapping / AMCL / move_base launch files
-│       ├── myagv_urdf/         # Robot URDF (not used in dataset bringup)
-│       └── myagv_ps2/          # PS2 controller (unused in dataset)
-│
-├── agv_ws/                     # Dataset bringup workspace
-│   └── src/
-│       ├── agv_bringup/        # Main dataset launch + calibration files
-│       │   ├── launch/
-│       │   │   ├── bringup.launch   # ★ Start everything: odom + LiDAR + camera + TFs
-│       │   │   ├── logging.launch   # rosbag recording (used by start_session.sh)
-│       │   │   └── apriltag.launch  # AprilTag detection
-│       │   └── calibration/         # ★ All calibration output files
-│       │       ├── extrinsics.yaml          # Sensor poses relative to base_footprint
-│       │       ├── camera_intrinsics.yaml   # D455 colour + depth intrinsics (factory)
-│       │       ├── imu_intrinsics.yaml      # BMI085 noise + drift (static test)
-│       │       └── mocap_to_base.yaml       # PhaseSpace extrinsic (Stage 2, pending)
-│       └── realsense-ros/      # RealSense SDK ROS wrapper (vendored)
-│
-├── scripts/
-│   ├── calibration/            # Calibration scripts (run on robot)
-│   │   ├── extract_realsense_calib.py  # Reads factory intrinsics from live ROS topics
-│   │   └── imu_static_test.py          # 60s static IMU noise characterisation
-│   └── logging/                # ★ Dataset recording tools (run on Mac or robot)
-│       ├── start_session.sh    # Wrapper: pre-flight checks + rosbag + session manifest
-│       └── validate_bag.py     # Post-run bag quality validator (publishability check)
-│
-├── docs/
-│   ├── PUBLISHABILITY_CHECKLIST.md
-│   └── STAGE_1_CALIBRATION_SOP.md
-│
-├── drivers/                    # Vendored third-party SDKs
-│   ├── YDLidar-SDK/
-│   └── robot_pose_ekf/
-│
-└── configs/
-    └── yyy.rviz
-```
-
----
+The goal of this repo is repeatable deployment: clone or pull it on a robot, run one setup script, then collect bags with a single session command.
 
 ## Quick Start
 
-**On the robot** (SSH to `ubuntu@192.168.0.185`):
+On a fresh or updated robot:
 
 ```bash
-# 1. Pull latest
-cd ~/slam_project && git pull origin main
-
-# 2. Source both workspaces (order matters — myagv_ros first)
-source ~/slam_project/myagv_ros/devel/setup.bash
-source ~/slam_project/agv_ws/devel/setup.bash
-
-# 3. Launch everything (odom + LiDAR + RealSense D455 colour/depth + all TFs)
-roslaunch agv_bringup bringup.launch
-
-# 4. Start a recording session (separate terminal, run from Mac or robot)
-#    Sets env vars, runs pre-flight checks, records bag, writes session manifest
-bash scripts/logging/start_session.sh
+cd ~/slam_project
+git pull
+bash scripts/setup_robot.sh
 ```
 
-**Teleop** (separate terminal, robot side):
+Start a data collection session:
+
 ```bash
+cd ~/slam_project
+export REQUIRE_GT=false
+export REQUIRE_IMU=false
+bash scripts/logging/start_session.sh agv1 square_manual
+```
+
+Drive manually in another terminal:
+
+```bash
+ssh ubuntu@<robot-ip>
+source /opt/ros/melodic/setup.bash
+source ~/slam_project/myagv_ros/devel/setup.bash
 rosrun myagv_teleop myagv_teleop.py
 ```
 
-**Validate a recorded bag** (Mac or robot, requires ROS sourced):
+Or run a conservative automatic square:
+
 ```bash
-# Run on robot where ROS is available
+ssh ubuntu@<robot-ip>
+cd ~/slam_project
+source /opt/ros/melodic/setup.bash
 source ~/slam_project/myagv_ros/devel/setup.bash
 source ~/slam_project/agv_ws/devel/setup.bash
-python3 scripts/logging/validate_bag.py ~/agv_data/<bag_name>.bag
-# Exit 0 = PASS, 1 = FAIL, 2 = WARN
+python scripts/logging/drive_square.py --side 0.75 --linear 0.22 --angular 0.28 --cycles 1
 ```
 
----
+Stop recording with `Ctrl+C`. Bags and manifests are written to `~/agv_data`.
 
-## What Each Workspace Does
+## Next Lab Visit Commands
 
-### `myagv_ros` — Robot runtime
+Use separate terminals on the robot. Keep the robot on the floor with clear space before running motion scripts.
 
-The vendor workspace. Build and source this first — `agv_ws` depends on it.
+Terminal 1, record a straight-line bag:
 
-| Package | What it does |
-|---|---|
-| `myagv_odometry` | Serial comms to AGV base controller (`/dev/ttyACM0`); publishes `/odom` and `odom → base_footprint` TF |
-| `ydlidar_ros_driver` | Drives YDLiDAR X2 (`/dev/ttyAMA0`); publishes `/scan` and `base_footprint → laser_frame` TF |
-| `myagv_teleop` | Keyboard teleoperation via `/cmd_vel` |
-| `myagv_navigation` | gmapping / AMCL / move_base launch files (development use only) |
+```bash
+ssh ubuntu@<robot-ip>
+cd ~/slam_project
+export REQUIRE_GT=false
+export REQUIRE_IMU=false
+bash scripts/logging/start_session.sh agv1 straight_slow
+```
 
-### `agv_ws` — Dataset bringup
+Terminal 2, drive the straight line:
 
-The dataset collection workspace. Source after `myagv_ros`.
+```bash
+ssh ubuntu@<robot-ip>
+cd ~/slam_project
+source /opt/ros/melodic/setup.bash
+source ~/slam_project/myagv_ros/devel/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+python scripts/logging/drive_straight.py --distance 1.50 --speed 0.18
+```
 
-| Package | What it does |
-|---|---|
-| `agv_bringup` | Single launch file starts all sensors; holds all calibration files |
-| `realsense-ros` | RealSense SDK ROS wrapper for D455 colour and depth (vendored) |
+Stop Terminal 1 with `Ctrl+C`, then validate:
 
-### `scripts/logging` — Dataset recording tools
+```bash
+python3 scripts/logging/validate_bag.py $(ls -t ~/agv_data/*.bag | head -1)
+python scripts/logging/audit_bag_fast.py $(ls -t ~/agv_data/*.bag | head -1)
+```
 
-| Script | Where to run | What it does |
-|---|---|---|
-| `start_session.sh` | Robot or Mac | Pre-flight topic checks, auto-generates `session_manifest.yaml`, wraps `logging.launch`, finalises manifest with duration + bag size on exit |
-| `validate_bag.py` | Robot (needs ROS) | Checks topic presence, rates vs EuRoC/TUM thresholds, frame drops, colour/depth sync, bag integrity. Exit 0/1/2 = PASS/FAIL/WARN |
+Then record a square bag:
 
-### `scripts/calibration` — Calibration tools
+```bash
+ssh ubuntu@<robot-ip>
+cd ~/slam_project
+export REQUIRE_GT=false
+export REQUIRE_IMU=false
+bash scripts/logging/start_session.sh agv1 square_slow
+```
 
-Run on the robot to generate/update the calibration YAML files in `agv_bringup/calibration/`.
+In another terminal:
 
-| Script | What it does |
-|---|---|
-| `extract_realsense_calib.py` | Reads factory intrinsics from `/camera/color/camera_info` and `/camera/depth/camera_info`; writes `camera_intrinsics.yaml` |
-| `imu_static_test.py` | 60 s static test on `/camera/imu`; reports noise, drift, gravity alignment; writes `imu_intrinsics.yaml` |
+```bash
+ssh ubuntu@<robot-ip>
+cd ~/slam_project
+source /opt/ros/melodic/setup.bash
+source ~/slam_project/myagv_ros/devel/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+python scripts/logging/drive_square.py --side 0.75 --linear 0.22 --angular 0.28 --cycles 1
+```
 
----
+Stop recording and validate again:
+
+```bash
+python3 scripts/logging/validate_bag.py $(ls -t ~/agv_data/*.bag | head -1)
+python scripts/logging/audit_bag_fast.py $(ls -t ~/agv_data/*.bag | head -1)
+```
+
+## What Is Production
+
+Use these paths for normal robot operation:
+
+```text
+scripts/setup_robot.sh                     Build/check workspaces after clone or pull
+scripts/logging/start_session.sh           One-command bringup + AprilTag + rosbag + manifest
+scripts/logging/validate_bag.py            Full post-run publishability check
+scripts/logging/audit_bag_fast.py          Fast topic/rate/gap/sync audit
+scripts/logging/drive_straight.py          Odom-bounded straight-line dataset helper
+scripts/logging/drive_square.py            Odom-bounded square motion helper
+scripts/logging/drive_forward_back.py      Odom-bounded smoke-test motion helper
+agv_ws/src/agv_bringup/launch/bringup.launch
+agv_ws/src/agv_bringup/launch/logging.launch
+agv_ws/src/agv_bringup/launch/apriltag.launch
+agv_ws/src/agv_bringup/calibration/
+```
+
+Diagnostic and hardware-investigation scripts live under:
+
+```text
+scripts/diagnostics/
+```
+
+## Repository Layout
+
+```text
+agv_on-board/
+├── myagv_ros/                  Vendor AGV base, odometry, teleop, LiDAR ROS packages
+├── agv_ws/
+│   └── src/
+│       ├── agv_bringup/        Dataset launch files, TFs, calibration, tag config
+│       └── realsense-ros/      Vendored RealSense ROS wrapper
+├── scripts/
+│   ├── setup_robot.sh          Build/check robot after clone or pull
+│   ├── calibration/            Calibration extraction and static tests
+│   ├── diagnostics/            Hardware debug scripts
+│   └── logging/                Recording, validation, motion helpers
+├── docs/                       SOPs and dataset checklists
+├── drivers/                    Vendored third-party SDK/reference code
+└── configs/                    RViz configs
+```
+
+## Robot Runtime
+
+Source order matters:
+
+```bash
+source /opt/ros/melodic/setup.bash
+source ~/slam_project/myagv_ros/devel/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+```
+
+Manual bringup without recording:
+
+```bash
+roslaunch agv_bringup bringup.launch enable_imu:=false
+```
+
+AprilTag only:
+
+```bash
+roslaunch agv_bringup apriltag.launch
+```
+
+Production recording:
+
+```bash
+bash scripts/logging/start_session.sh <robot_name> <scenario_name>
+```
+
+`start_session.sh` writes:
+
+```text
+~/agv_data/<robot>_<scenario>_<timestamp>.bag
+~/agv_data/<robot>_<scenario>_<timestamp>_manifest.yaml
+~/agv_data/<robot>_<scenario>_<timestamp>_chrony.txt
+```
+
+It records with `rosbag --buffsize=2048 --lz4`, which was validated on the live robot for RGB-D + LiDAR recording without buffer overflow.
+
+## Recorded Topics
+
+Default robot bag topics:
+
+```text
+/scan
+/odom
+/cmd_vel
+/tf
+/tf_static
+/camera/color/image_raw
+/camera/color/camera_info
+/camera/depth/camera_info
+/camera/aligned_depth_to_color/image_raw
+/camera/aligned_depth_to_color/camera_info
+/camera/extrinsics/depth_to_color
+/diagnostics
+/tag_detections
+```
+
+Optional topics are included when available:
+
+```text
+/camera/imu
+/camera/accel/sample
+/camera/gyro/sample
+/camera/accel/imu_info
+/camera/gyro/imu_info
+${MOCAP_TOPIC:-/phasespace/rigids}
+/mocap
+```
+
+Use:
+
+```bash
+export REQUIRE_GT=true
+export MOCAP_TOPIC=/phasespace/rigids
+```
+
+when ground truth must be present in the same ROS graph. If PhaseSpace ground truth is recorded separately, keep `REQUIRE_GT=false` and save chrony status on both machines.
+
+## Current Validated Baseline
+
+Live robot bag checked on 2026-04-29:
+
+```text
+bag: agv1_square_manual_20260429_224111.bag
+duration: 85.1 s
+/scan: 17.93 Hz
+/odom: 12.65 Hz
+/camera/color/image_raw: 14.96 Hz
+/camera/aligned_depth_to_color/image_raw: 14.96 Hz
+/tf: 87.02 Hz
+camera color/depth sync: 0.00 ms median, 0.00 ms max
+diagnostics: 0 warnings, 0 errors
+overall audit: PASS
+```
+
+This is good enough for robot-only Week 1 SLAM smoke validation.
+
+Known limitations:
+
+```text
+RealSense D455 IMU is disabled by default. The current D455/wrapper/firmware stack publishes IMU in IMU-only mode, but not while RGB-D video is active.
+AprilTag topic publishes live, but detections require a configured printed tag in view.
+Ground truth is optional by default because PhaseSpace may be recorded separately on a chrony-synced machine.
+```
 
 ## Transform Tree
 
+```text
+odom
+└── base_footprint
+    ├── base_link          static alias, colocated
+    ├── laser_frame        z=0.100 m measured
+    └── camera_link        CAD extrinsic from original mount
+        ├── camera_color_frame
+        ├── camera_depth_frame
+        └── camera_aligned_depth_to_color_frame
 ```
-world (PhaseSpace mocap — Stage 2, pending)
-  └── odom  [dynamic, published by myagv_odometry_node]
-        └── base_footprint
-              ├── laser_frame     [X2.launch:     z=0.100m measured, x/y pending]
-              └── camera_link     [bringup.launch: CAD values from assembly.urdf]
-                    ├── camera_color_optical_frame   ]
-                    ├── camera_depth_optical_frame   } published by realsense2_camera
-                    └── camera_imu_optical_frame     ]
+
+Important static transforms:
+
+```text
+base_footprint -> base_link:
+  xyz=(0, 0, 0), rpy=(0, 0, 0)
+
+base_footprint -> laser_frame:
+  xyz=(0, 0, 0.100), rpy=(0, 0, 0)
+
+base_footprint -> camera_link:
+  xyz=(-0.132025, 0.000153, 0.187925)
+  rpy=(pi/2, -0.007906, -pi/2)
 ```
 
-Static TFs are published at 40 Hz by `static_transform_publisher` nodes.
+## Validation
 
-**Camera extrinsic** (`base_footprint → camera_link`):
-```
-x=-0.132025  y=0.000153  z=0.187925  rpy=(π/2, −0.0079, −π/2)
-```
-Source: `assembly.urdf` CAD. An L-bracket mount was trialled 2026-03-15 but caused significant LiDAR forward-sector blockage and was reverted.
-
----
-
-## Key Topics
-
-| Topic | Target Hz | Measured Hz | Type | Source |
-|---|---|---|---|---|
-| `/cmd_vel` | on demand | — | `geometry_msgs/Twist` | Teleop / planner |
-| `/odom` | 20 Hz | ~13 Hz | `nav_msgs/Odometry` | `myagv_odometry_node` |
-| `/scan` | 18 Hz | ~18 Hz | `sensor_msgs/LaserScan` | `ydlidar_ros_driver` |
-| `/camera/color/image_raw` | 15 Hz | ~15 Hz | `sensor_msgs/Image` | `realsense2_camera` |
-| `/camera/color/camera_info` | 15 Hz | ~15 Hz | `sensor_msgs/CameraInfo` | `realsense2_camera` |
-| `/camera/aligned_depth_to_color/image_raw` | 15 Hz | ~15 Hz | `sensor_msgs/Image` | `realsense2_camera` |
-| `/camera/imu` | 200 Hz | — (disabled) | `sensor_msgs/Imu` | **USB 2 only — see note below** |
-| `/tag_detections` | on demand | — | `apriltag_ros/AprilTagDetectionArray` | `apriltag_ros` |
-
-Measured Hz from 2026-03-15 test bags. `/odom` lower than target — base controller serial output rate; further investigation pending.
-
-### USB 2 limitation
-
-The D455 is connected via USB 2.0. At USB 2 bandwidth (~480 Mbps theoretical, ~200 Mbps practical for bulk transfers):
-
-- Colour 640×480@15Hz ≈ 110 Mbps
-- Depth 640×480@15Hz ≈ 74 Mbps
-- **Total ≈ 184 Mbps — within USB 2 budget**
-- IMU (accel + gyro) ≈ 77 Mbps — pushes total over limit
-
-`bringup.launch` therefore disables `enable_accel`, `enable_gyro`, and `enable_sync`. Colour and depth stream reliably. IMU is unavailable until a USB 3 port/hub is available. This is noted as a known limitation in the dataset paper.
-
-**Validated measured rates** (2026-03-15, 119s static test bag):
-`/scan` 17.2 Hz · `/odom` 12.6 Hz · colour 15.0 Hz · depth 14.9 Hz · colour/depth sync mean 0.3 ms · max sync 66.9 ms · frame drops ~0%
-
-**Motion validation:** pending — requires a 2-minute drive session recorded via `logging.launch` (not manual `rosbag record`).
-
----
-
-## Calibration Status (Stage 1 — Complete)
-
-All outputs live in `agv_ws/src/agv_bringup/calibration/`.
-
-| Parameter | Status | Value |
-|---|---|---|
-| `base_footprint → laser_frame` z | ✅ Measured | 0.100 m |
-| `base_footprint → laser_frame` x, y | ⏳ Pending | (0, 0) placeholder |
-| `base_footprint → camera_link` | ✅ CAD | (−0.132, 0.000, 0.188) m |
-| Camera colour intrinsics (fx, fy) | ✅ Factory | 386.8, 386.4 px |
-| Camera depth intrinsics (fx, fy) | ✅ Factory | 391.3, 391.3 px |
-| IMU noise density — accel | ✅ Factory | 0.0028 m/s²/√Hz |
-| IMU noise density — gyro | ✅ Factory | 2.44×10⁻⁴ rad/s/√Hz |
-| IMU gyro drift | ✅ Static test | 0.153 deg/s |
-| Wheel odometry scale | ⏳ Pending | Stage 2 (needs mocap) |
-| PhaseSpace extrinsic | ⏳ Pending | Stage 2 |
-
-See `docs/STAGE_1_CALIBRATION_SOP.md` for the full calibration procedure.
-
----
-
-## Hardware Connections
-
-| Device | Port | Notes |
-|---|---|---|
-| AGV base controller | `/dev/ttyACM0` | STM32 firmware protocol |
-| YDLiDAR X2 | `/dev/ttyAMA0` | 115200 baud |
-| RealSense D455 | USB 2.0 (current) | USB 3 needed for IMU; see USB 2 note above |
-
----
-
-## Repository Sync
-
-The robot clones this repo at `~/slam_project/`. The Mac is the source of truth.
+Fast audit:
 
 ```bash
-# Mac → GitHub
-git push origin main
-
-# Robot ← GitHub
-ssh ubuntu@192.168.0.185 "cd ~/slam_project && git pull origin main"
+cd ~/slam_project
+source /opt/ros/melodic/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+python scripts/logging/audit_bag_fast.py ~/agv_data/<bag>.bag
 ```
 
----
+Full validator:
 
-## Troubleshooting
-
-### LiDAR fails to start ("Operation timed out")
-
-This is a transient motor spin-up timeout in the X2 driver. Kill and retry:
 ```bash
-rosnode kill /ydlidar_ros_driver_node
-# or kill the whole bringup and re-run roslaunch agv_bringup bringup.launch
+python3 scripts/logging/validate_bag.py ~/agv_data/<bag>.bag
 ```
 
-### Camera nodelet dies immediately on startup
+Exit codes:
 
-Cause: stale nodelet registration in the ROS master from a previous session.
-Fix: kill all ROS processes cleanly before relaunching.
+```text
+0 = pass
+1 = fail
+2 = warning
+```
+
+Expected warnings for the current robot-only setup:
+
+```text
+ground truth missing, unless REQUIRE_GT=true
+IMU missing, unless REQUIRE_IMU=true
+```
+
+## Copy Bags To Laptop
+
+From the laptop:
+
 ```bash
-# On robot
-killall -9 rosmaster roscore roslaunch nodelet python2 2>/dev/null
-sleep 2
-# Then relaunch normally
-roslaunch agv_bringup bringup.launch
+mkdir -p /Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/dataset/week1
+scp ubuntu@<robot-ip>:/home/ubuntu/agv_data/*.bag \
+  /Users/riyaa/Desktop/UCL_Year3/Multi-SLAM/SLAM_Code/dataset/week1/
 ```
 
-### Camera `control_transfer returned error, index: 768`
+## Clean Robot Run Data
 
-These are benign USB 2 bandwidth warnings from the RealSense SDK polling hardware registers. Image streaming is unaffected. They appear in the log but do not cause node failure.
+On the robot:
 
-### `roslaunch agv_bringup bringup.launch` finds multiple files
-
-A stale copy of `bringup.launch` was left in the `calibration/` folder on the robot.
 ```bash
-rm ~/slam_project/agv_ws/src/agv_bringup/calibration/bringup.launch
+rm -f ~/agv_data/*.bag ~/agv_data/*.bag.active ~/agv_data/*_manifest.yaml ~/agv_data/*_chrony.txt
 ```
 
----
+## Hardware
 
-## What Is Not Included Here
+```text
+AGV base controller: /dev/ttyACM0
+YDLiDAR X2:          /dev/ttyAMA0
+RealSense D455:      USB 3.x, RGB-D 640x480 at 15 Hz
+```
 
-- PhaseSpace ROS driver and mocap integration (Stage 2)
-- Multi-robot namespace management and ROS_MASTER_URI configuration
-- Time synchronisation across robots (PTP / `chrony`)
-- Wheel odometry physical calibration (Stage 2, needs mocap ground truth)
+## Scaling To More Robots
+
+For each robot:
+
+1. Clone/pull this repo to `~/slam_project`.
+2. Run `bash scripts/setup_robot.sh`.
+3. Assign a stable robot name, e.g. `agv1`, `agv2`, `agv3`.
+4. Record with `bash scripts/logging/start_session.sh <robot_name> <scenario>`.
+5. Keep robot bags and any separate PhaseSpace logs named with the same robot/scenario/timestamp convention.
+6. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.

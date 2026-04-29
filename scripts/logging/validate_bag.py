@@ -5,14 +5,16 @@ validate_bag.py — Post-run bag quality validator for the AGV SLAM dataset.
 
 Usage:
     python3 validate_bag.py <path_to_bag_file>
-    python3 validate_bag.py <path_to_bag_file> --strict   # fail on any warning
+    python3 validate_bag.py <path_to_bag_file> --strict      # fail on any warning
+    python3 validate_bag.py <path_to_bag_file> --require-gt  # require mocap/GT
+    python3 validate_bag.py <path_to_bag_file> --require-imu # require IMU
 
 Checks:
     1. All required topics are present
     2. Each topic meets the minimum publishable rate
     3. No topic has a gap longer than 2x its expected period (frame drop check)
     4. Colour and depth are temporally aligned (USB 2 sync check)
-    5. IMU timestamps are monotonically increasing
+    5. IMU timestamps are monotonically increasing if IMU is present/required
     6. Bag file is not truncated or corrupted
     7. Bag duration meets minimum run length
 
@@ -35,7 +37,8 @@ from collections import defaultdict
 # Publishability thresholds
 # Rates are MINIMUM acceptable Hz. Based on EuRoC (IMU 200Hz, cam 20Hz) and
 # TUM RGB-D (30Hz) — we use 15Hz camera which is below TUM but acceptable
-# for a LiDAR-primary dataset. IMU at 200Hz matches EuRoC.
+# for a LiDAR-primary dataset. IMU is currently optional because the D455 motion
+# module fails when video streams are enabled on this robot.
 # ---------------------------------------------------------------------------
 
 REQUIRED_TOPICS = {
@@ -43,21 +46,36 @@ REQUIRED_TOPICS = {
     # target_hz: configured/expected rate — used for gap-based drop detection
     "/scan":                                    {"min_hz": 5.0,   "target_hz": 18.0,  "type": "sensor_msgs/LaserScan"},
     "/odom":                                    {"min_hz": 12.0,  "target_hz": 20.0,  "type": "nav_msgs/Odometry"},
+    "/cmd_vel":                                 {"min_hz": 0.0,   "target_hz": 0.0,   "type": "geometry_msgs/Twist"},
     "/tf":                                      {"min_hz": 10.0,  "target_hz": 50.0,  "type": "tf2_msgs/TFMessage"},
+    "/tf_static":                               {"min_hz": 0.0,   "target_hz": 0.0,   "type": "tf2_msgs/TFMessage"},
     "/camera/color/image_raw":                  {"min_hz": 12.0,  "target_hz": 15.0,  "type": "sensor_msgs/Image"},
     "/camera/color/camera_info":                {"min_hz": 12.0,  "target_hz": 15.0,  "type": "sensor_msgs/CameraInfo"},
     "/camera/aligned_depth_to_color/image_raw": {"min_hz": 12.0,  "target_hz": 15.0,  "type": "sensor_msgs/Image"},
+    "/camera/aligned_depth_to_color/camera_info": {"min_hz": 12.0, "target_hz": 15.0, "type": "sensor_msgs/CameraInfo"},
 }
 
 OPTIONAL_TOPICS = {
-    # IMU: requires USB 3 for hardware sync + adequate bandwidth.
-    # On USB 2, accel/gyro streams are disabled to keep colour+depth within ~184 Mbps.
-    # Re-enable once USB 3 is available; note limitation in dataset paper.
-    "/camera/imu":     {"min_hz": 150.0, "type": "sensor_msgs/Imu"},
-    "/cmd_vel":        {"min_hz": 0.0,   "type": "geometry_msgs/Twist"},
-    "/tf_static":      {"min_hz": 0.0,   "type": "tf2_msgs/TFMessage"},
-    "/tag_detections": {"min_hz": 0.0,   "type": "apriltag_ros/AprilTagDetectionArray"},
+    "/camera/depth/camera_info":        {"min_hz": 0.0, "type": "sensor_msgs/CameraInfo"},
+    "/camera/imu":                      {"min_hz": 150.0, "target_hz": 200.0, "type": "sensor_msgs/Imu"},
+    "/camera/accel/sample":             {"min_hz": 60.0, "target_hz": 100.0, "type": "sensor_msgs/Imu"},
+    "/camera/gyro/sample":              {"min_hz": 150.0, "target_hz": 200.0, "type": "sensor_msgs/Imu"},
+    "/camera/accel/imu_info":           {"min_hz": 0.0, "type": "realsense2_camera/IMUInfo"},
+    "/camera/gyro/imu_info":            {"min_hz": 0.0, "type": "realsense2_camera/IMUInfo"},
+    "/camera/extrinsics/depth_to_color": {"min_hz": 0.0, "type": "realsense2_camera/Extrinsics"},
+    "/diagnostics":                     {"min_hz": 0.0, "type": "diagnostic_msgs/DiagnosticArray"},
+    "/tag_detections":                  {"min_hz": 0.0, "type": "apriltag_ros/AprilTagDetectionArray"},
 }
+
+GROUND_TRUTH_TOPICS = [
+    "/phasespace/rigids",
+    "/mocap",
+    "/ground_truth",
+    "/ground_truth/pose",
+    "/vrpn_client_node/agv01/pose",
+]
+if os.environ.get("MOCAP_TOPIC") and os.environ["MOCAP_TOPIC"] not in GROUND_TRUTH_TOPICS:
+    GROUND_TRUTH_TOPICS.insert(0, os.environ["MOCAP_TOPIC"])
 
 # Minimum run duration for a useful dataset sequence
 MIN_DURATION_SEC = 30.0
@@ -166,6 +184,112 @@ def check_topics(info, duration):
     return bag_topics
 
 
+def check_ground_truth(bag_topics, duration, require_gt):
+    """Require at least one mocap/ground-truth topic for Week 1 validation bags."""
+    print("\n--- Ground truth ---")
+
+    present = [topic for topic in GROUND_TRUTH_TOPICS if topic in bag_topics]
+    if not present:
+        level = FAIL if require_gt else WARN
+        record(level, "ground_truth",
+               "MISSING — checked: {}".format(", ".join(GROUND_TRUTH_TOPICS)))
+        return
+
+    for topic in present:
+        msg_count = bag_topics[topic].get("messages", 0)
+        actual_hz = msg_count / duration if duration > 0 else 0.0
+        if actual_hz >= 30.0:
+            record(PASS, topic, "{} msgs @ {:.1f} Hz".format(msg_count, actual_hz))
+        elif actual_hz > 0.0:
+            record(WARN, topic, "{} msgs @ {:.1f} Hz — below 30 Hz floor".format(
+                msg_count, actual_hz))
+        else:
+            record(FAIL, topic, "present but no messages")
+
+
+def check_imu_requirement(bag_topics, duration, require_imu):
+    """Require at least one IMU stream only when requested."""
+    print("\n--- IMU availability ---")
+
+    imu_topics = ["/camera/imu", "/camera/accel/sample", "/camera/gyro/sample"]
+    present = [topic for topic in imu_topics if topic in bag_topics]
+    if not present:
+        level = FAIL if require_imu else WARN
+        record(level, "imu", "MISSING — no IMU stream recorded")
+        return
+
+    any_live = False
+    for topic in present:
+        msg_count = bag_topics[topic].get("messages", 0)
+        actual_hz = msg_count / duration if duration > 0 else 0.0
+        if actual_hz > 0.0:
+            any_live = True
+            record(PASS, topic, "{} msgs @ {:.1f} Hz".format(msg_count, actual_hz))
+        else:
+            record(WARN, topic, "present but no messages")
+
+    if require_imu and not any_live:
+        record(FAIL, "imu", "IMU required but all IMU topics are empty")
+
+
+def check_tf_tree(bag_path, bag_topics):
+    """Check the core TF edges needed to align sensors and ground truth."""
+    print("\n--- TF tree ---")
+
+    tf_topics = [topic for topic in ["/tf", "/tf_static"] if topic in bag_topics]
+    if not tf_topics:
+        record(FAIL, "tf_tree", "No TF topics recorded")
+        return
+
+    try:
+        cmd = [
+            "python2", "-c",
+            """
+import rosbag, sys
+b = rosbag.Bag(sys.argv[1])
+pairs = set()
+for topic, msg, stamp in b.read_messages(topics=['/tf', '/tf_static']):
+    for tr in msg.transforms:
+        parent = tr.header.frame_id.lstrip('/')
+        child = tr.child_frame_id.lstrip('/')
+        if parent and child:
+            pairs.add(parent + '>' + child)
+b.close()
+print('\\n'.join(sorted(pairs)))
+""",
+            bag_path
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
+                                      timeout=60, env=_ros2_env())
+        pairs = set(line.strip() for line in out.decode().splitlines() if line.strip())
+
+        required_pairs = [
+            "odom>base_footprint",
+            "base_footprint>base_link",
+            "base_footprint>laser_frame",
+            "base_footprint>camera_link",
+        ]
+        missing = [pair for pair in required_pairs if pair not in pairs]
+        if missing:
+            record(FAIL, "tf_tree", "Missing required TF edge(s): {}".format(
+                ", ".join(missing)))
+        else:
+            record(PASS, "tf_tree",
+                   "Core chain present: odom -> base_footprint -> base_link, laser_frame, camera_link")
+
+        camera_pairs = [pair for pair in pairs if pair.startswith("camera_link>")]
+        if camera_pairs:
+            record(PASS, "camera_tf", "{} camera child frame edge(s) present".format(
+                len(camera_pairs)))
+        else:
+            record(WARN, "camera_tf",
+                   "No camera_link child frames found; RGB-D SLAM may not resolve optical frames")
+
+    except Exception:
+        record(WARN, "tf_tree",
+               "Could not inspect TF messages — run with python2 rosbag for precise check")
+
+
 def _ros2_env():
     """Return an env dict with ROS Melodic python2 paths set for subprocess calls."""
     env = os.environ.copy()
@@ -187,7 +311,6 @@ def check_frame_drops(bag_path, bag_topics, duration):
     camera_topics = [
         "/camera/color/image_raw",
         "/camera/aligned_depth_to_color/image_raw",
-        "/camera/imu",
     ]
 
     for topic in camera_topics:
@@ -387,18 +510,18 @@ def print_summary(bag_path, duration, bag_topics, strict):
     ))
 
     # USB 2 specific summary
-    print("\n  USB 2 assessment:")
+    print("\n  RGB-D/IMU assessment:")
     sync_fails = [r for r in results if "sync" in r[1] and r[0] == FAIL]
     drop_fails = [r for r in results if "gaps" in r[1] and r[0] == FAIL]
     drop_warns = [r for r in results if "gaps" in r[1] and r[0] == WARN]
 
     if sync_fails or drop_fails:
-        print("  ! USB 2 is causing data quality issues — consider USB 3 hub or lower resolution")
+        print("  ! Sensor streaming is causing data quality issues — reduce load or inspect USB")
     elif drop_warns:
-        print("  ~ USB 2 showing occasional drops — acceptable for most SLAM algorithms")
+        print("  ~ Sensor streams show occasional drops — acceptable for most SLAM algorithms")
         print("    but flag this in your dataset paper as a known limitation")
     else:
-        print("  ✓ USB 2 appears sufficient at 640x480 @ 15Hz for this run")
+        print("  ✓ RGB-D/IMU streaming appears stable for this run")
 
     print("\n  Publishability verdict:")
     if n_fail == 0 and n_warn == 0:
@@ -421,6 +544,8 @@ def main():
 
     bag_path = sys.argv[1]
     strict = "--strict" in sys.argv
+    require_gt = "--require-gt" in sys.argv or os.environ.get("REQUIRE_GT") == "true"
+    require_imu = "--require-imu" in sys.argv or os.environ.get("REQUIRE_IMU") == "true"
 
     if not os.path.exists(bag_path):
         print("ERROR: bag file not found: {}".format(bag_path))
@@ -435,6 +560,9 @@ def main():
     check_bag_integrity(bag_path)
     duration = check_duration(info)
     bag_topics = check_topics(info, duration)
+    check_ground_truth(bag_topics, duration, require_gt)
+    check_imu_requirement(bag_topics, duration, require_imu)
+    check_tf_tree(bag_path, bag_topics)
     check_frame_drops(bag_path, bag_topics, duration)
     check_colour_depth_sync(bag_path, bag_topics)
     check_imu_monotonic(bag_path, bag_topics)

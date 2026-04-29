@@ -1,5 +1,8 @@
 <launch>
 
+  <arg name="enable_imu" default="false" />
+  <arg name="enable_realsense_sync" default="true" />
+
   <!-- 1. Start the AGV base driver (motion + odom + TF) -->
   <!-- serial_port: the USB-serial device for the STM32 base controller.
        Default /dev/ttyACM0; override with <arg name="serial_port" value="..."/> -->
@@ -19,26 +22,30 @@
   <node pkg="tf" type="static_transform_publisher" name="base_to_camera_link"
         args="-0.132025 0.000153 0.187925 -1.570796 -0.007906 1.570796 /base_footprint /camera_link 40" />
 
-  <!-- RealSense D455: 640x480 @ 15 Hz colour + depth.
-       USB 2.0 workaround: IMU streams disabled to stay within USB 2 bandwidth.
-       Colour (110 Mbps) + Depth (74 Mbps) = ~184 Mbps, within USB 2 practical limit.
-       align_depth: aligns depth to colour frame (required for RGB-D SLAM).
-       enable_sync: disabled on USB 2 (hardware sync requires USB 3 control channel).
-       NOTE: When USB 3 is available, re-enable accel/gyro and unite_imu_method. -->
+  <!-- Dataset base frame alias.
+       Week 1 ground truth is aligned to base_link; on this AGV base_link is
+       colocated with base_footprint unless a measured body-centre z offset is added. -->
+  <node pkg="tf" type="static_transform_publisher" name="base_footprint_to_base_link"
+        args="0.0 0.0 0.0 0.0 0.0 0.0 /base_footprint /base_link 40" />
+
+  <!-- RealSense D455: 640x480 @ 15 Hz colour + aligned depth.
+       Live check on 2026-04-29: RGB/depth are stable on USB 3.2; the D455
+       motion module publishes IMU only when video streams are disabled. Keep
+       enable_imu=false for reliable RGB-D dataset recording until that driver/
+       device issue is fixed. align_depth is required for RGB-D SLAM. -->
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
       <arg name="align_depth"         value="true"/>
       <arg name="enable_pointcloud"   value="false"/>
-      <arg name="enable_sync"         value="false"/>
+      <arg name="enable_sync"         value="$(arg enable_realsense_sync)"/>
       <arg name="color_width"         value="640"/>
       <arg name="color_height"        value="480"/>
       <arg name="color_fps"           value="15"/>
       <arg name="depth_width"         value="640"/>
       <arg name="depth_height"        value="480"/>
       <arg name="depth_fps"           value="15"/>
-      <arg name="enable_accel"        value="false"/>
-      <arg name="enable_gyro"         value="false"/>
-      <arg name="unite_imu_method"    value="none"/>
+      <arg name="enable_accel"        value="$(arg enable_imu)"/>
+      <arg name="enable_gyro"         value="$(arg enable_imu)"/>
+      <arg name="unite_imu_method"    value="linear_interpolation"/>
   </include>
 
 </launch>
-

@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Build and prepare the AGV robot-side stack after clone/pull.
+#
+# Usage:
+#   bash scripts/setup_robot.sh
+#   bash scripts/setup_robot.sh --install-system
+#
+# The default path does not run apt. Use --install-system on a fresh robot if
+# ROS dependencies such as chrony or apriltag_ros are missing.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+INSTALL_SYSTEM=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --install-system)
+            INSTALL_SYSTEM=true
+            ;;
+        -h|--help)
+            sed -n '1,16p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+section() {
+    echo ""
+    echo "== $1 =="
+}
+
+require_file() {
+    if [ ! -f "$1" ]; then
+        echo "ERROR: missing required file: $1" >&2
+        exit 1
+    fi
+}
+
+section "repo"
+echo "root: ${ROOT}"
+require_file "${ROOT}/myagv_ros/.catkin_workspace"
+require_file "${ROOT}/agv_ws/.catkin_workspace"
+require_file "/opt/ros/melodic/setup.bash"
+
+if [ "$INSTALL_SYSTEM" = true ]; then
+    section "system dependencies"
+    sudo apt-get update
+    sudo apt-get install -y \
+        chrony \
+        python3-yaml \
+        ros-melodic-apriltag-ros
+fi
+
+section "data directories"
+mkdir -p "${HOME}/agv_data"
+echo "bags: ${HOME}/agv_data"
+
+section "build myagv_ros"
+source /opt/ros/melodic/setup.bash
+cd "${ROOT}/myagv_ros"
+catkin_make
+
+section "build agv_ws"
+source /opt/ros/melodic/setup.bash
+source "${ROOT}/myagv_ros/devel/setup.bash"
+cd "${ROOT}/agv_ws"
+catkin_make
+
+section "workspace check"
+source /opt/ros/melodic/setup.bash
+source "${ROOT}/myagv_ros/devel/setup.bash"
+source "${ROOT}/agv_ws/devel/setup.bash"
+rospack find agv_bringup
+rospack find realsense2_camera
+rospack find ydlidar_ros_driver
+rospack find myagv_odometry
+
+section "script permissions"
+chmod +x \
+    "${ROOT}/scripts/logging/start_session.sh" \
+    "${ROOT}/scripts/logging/drive_straight.py" \
+    "${ROOT}/scripts/logging/drive_square.py" \
+    "${ROOT}/scripts/logging/drive_forward_back.py" \
+    "${ROOT}/scripts/logging/validate_bag.py" \
+    "${ROOT}/scripts/logging/audit_bag_fast.py" \
+    "${ROOT}/scripts/diagnostics/"*.sh 2>/dev/null || true
+
+section "next commands"
+cat <<EOF
+source /opt/ros/melodic/setup.bash
+source ${ROOT}/myagv_ros/devel/setup.bash
+source ${ROOT}/agv_ws/devel/setup.bash
+
+# One-command data run:
+bash ${ROOT}/scripts/logging/start_session.sh agv1 square_manual
+
+# Optional manual teleop in another terminal:
+rosrun myagv_teleop myagv_teleop.py
+EOF

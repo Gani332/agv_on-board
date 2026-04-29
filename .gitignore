@@ -4,6 +4,7 @@ devel/
 install/
 logs/
 *.pyc
+__pycache__/
 
 # IDEs
 .vscode/
@@ -11,7 +12,15 @@ logs/
 
 # Dataset files
 *.bag
+*.bag.active
 *.pgm
+/agv_data/
+/dataset/
+*_manifest.yaml
+*_chrony.txt
+
+# Local diagnostic output
+/diagnostics/
 
 # macOS
 .DS_Store

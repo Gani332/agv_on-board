@@ -26,12 +26,13 @@ frame_id: "laser_frame"
 
 # Extrinsic: laser_frame relative to base_footprint
 # UPDATE after physical measurement (Stage 1b)
-# Current value in X2.launch: z=0.20m, yaw=pi (mounted inverted/backwards)
+# Current value in myagv_ros/src/ydlidar_ros_driver/launch/X2.launch:
+# z=0.10m, yaw=0.0 (measured 2026-03-15)
 # Run: rosrun tf view_frames to verify full TF chain
 extrinsic:
   x: 0.0
   y: 0.0
-  z: 0.20      # height of LiDAR above base — PLACEHOLDER, measure physically
+  z: 0.10
   roll: 0.0
   pitch: 0.0
-  yaw: 3.1415  # pi = 180 deg — verify: is the X2 mounted forwards or backwards?
+  yaw: 0.0

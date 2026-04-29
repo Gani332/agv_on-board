@@ -5,6 +5,7 @@ install/
 logs/
 .catkin_workspace
 *.pyc
+__pycache__/
 
 # IDEs
 .vscode/
@@ -12,4 +13,5 @@ logs/
 
 # Large Files (Optional but recommended)
 *.bag
+*.bag.active
 *.pgm
