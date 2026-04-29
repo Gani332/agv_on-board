@@ -14,6 +14,11 @@ git pull
 bash scripts/setup_robot.sh
 ```
 
+`setup_robot.sh` installs expected system dependencies by default, including
+`chrony`, `apriltag_ros`, ROS message packages, rosbag, TF, and build tools. Use
+`bash scripts/setup_robot.sh --skip-system` only when the robot is already
+provisioned or has no internet access.
+
 Start a data collection session:
 
 ```bash

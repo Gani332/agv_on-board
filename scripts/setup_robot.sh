@@ -3,21 +3,21 @@
 #
 # Usage:
 #   bash scripts/setup_robot.sh
-#   bash scripts/setup_robot.sh --install-system
+#   bash scripts/setup_robot.sh --skip-system
 #
-# The default path does not run apt. Use --install-system on a fresh robot if
-# ROS dependencies such as chrony or apriltag_ros are missing.
+# By default this installs expected OS/ROS packages, then builds both catkin
+# workspaces. Use --skip-system only on an already provisioned/offline robot.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-INSTALL_SYSTEM=false
+INSTALL_SYSTEM=true
 
 for arg in "$@"; do
     case "$arg" in
-        --install-system)
-            INSTALL_SYSTEM=true
+        --skip-system)
+            INSTALL_SYSTEM=false
             ;;
         -h|--help)
             sed -n '1,16p' "$0"
@@ -46,15 +46,47 @@ section "repo"
 echo "root: ${ROOT}"
 require_file "${ROOT}/myagv_ros/.catkin_workspace"
 require_file "${ROOT}/agv_ws/.catkin_workspace"
-require_file "/opt/ros/melodic/setup.bash"
 
 if [ "$INSTALL_SYSTEM" = true ]; then
     section "system dependencies"
     sudo apt-get update
     sudo apt-get install -y \
+        build-essential \
         chrony \
+        cmake \
+        git \
+        python3-pip \
         python3-yaml \
-        ros-melodic-apriltag-ros
+        ros-melodic-apriltag-ros \
+        ros-melodic-diagnostic-msgs \
+        ros-melodic-geometry-msgs \
+        ros-melodic-image-transport-plugins \
+        ros-melodic-nav-msgs \
+        ros-melodic-rosbag \
+        ros-melodic-sensor-msgs \
+        ros-melodic-std-msgs \
+        ros-melodic-tf \
+        ros-melodic-tf2-msgs
+
+    if apt-cache show librealsense2-dev >/dev/null 2>&1; then
+        sudo apt-get install -y librealsense2-dev librealsense2-utils
+    else
+        echo "WARN: librealsense2-dev not available from configured apt sources."
+        echo "      Install Intel RealSense packages separately if this robot is fresh."
+    fi
+
+    sudo systemctl enable --now chrony 2>/dev/null || sudo service chrony restart || true
+fi
+
+require_file "/opt/ros/melodic/setup.bash"
+
+if ! command -v chronyc >/dev/null 2>&1; then
+    echo "ERROR: chronyc not found; install chrony or rerun without --skip-system." >&2
+    exit 1
+fi
+
+if ! chronyc tracking >/dev/null 2>&1; then
+    echo "WARN: chrony is installed but not reporting tracking status yet."
 fi
 
 section "data directories"
