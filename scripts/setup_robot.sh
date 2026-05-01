@@ -55,9 +55,11 @@ if [ "$INSTALL_SYSTEM" = true ]; then
         chrony \
         cmake \
         git \
+        python-opencv \
         python3-pip \
         python3-yaml \
         ros-melodic-apriltag-ros \
+        ros-melodic-cv-bridge \
         ros-melodic-diagnostic-msgs \
         ros-melodic-geometry-msgs \
         ros-melodic-image-transport-plugins \

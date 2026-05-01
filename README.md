@@ -255,7 +255,7 @@ Default robot bag topics:
 /camera/aligned_depth_to_color/camera_info
 /camera/extrinsics/depth_to_color
 /diagnostics
-/tag_detections
+/aruco/target_pose
 ```
 
 Optional topics are included when available:
@@ -302,7 +302,7 @@ Known limitations:
 
 ```text
 RealSense D455 IMU is disabled by default. The current D455/wrapper/firmware stack publishes IMU in IMU-only mode, but not while RGB-D video is active.
-AprilTag topic publishes live, but detections require a configured printed tag in view.
+ArUco target pose publishes only when the configured marker is visible; the current test marker is DICT_ARUCO_ORIGINAL id 503 with 0.15 m side length.
 Ground truth is optional by default because PhaseSpace may be recorded separately on a chrony-synced machine.
 ```
 

@@ -64,6 +64,7 @@ OPTIONAL_TOPICS = {
     "/camera/gyro/imu_info":            {"min_hz": 0.0, "type": "realsense2_camera/IMUInfo"},
     "/camera/extrinsics/depth_to_color": {"min_hz": 0.0, "type": "realsense2_camera/Extrinsics"},
     "/diagnostics":                     {"min_hz": 0.0, "type": "diagnostic_msgs/DiagnosticArray"},
+    "/aruco/target_pose":                {"min_hz": 0.0, "type": "geometry_msgs/PoseStamped"},
     "/tag_detections":                  {"min_hz": 0.0, "type": "apriltag_ros/AprilTagDetectionArray"},
 }
 

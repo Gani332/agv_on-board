@@ -12,12 +12,21 @@
   <arg name="datestamp"  default="$(optenv DATESTAMP 000000_000000)" />
   <arg name="mocap_topic" default="$(optenv MOCAP_TOPIC /phasespace/rigids)" />
   <arg name="enable_imu" default="$(optenv ENABLE_IMU false)" />
+  <arg name="aruco_dictionary" default="$(optenv ARUCO_DICTIONARY original)" />
+  <arg name="aruco_marker_size" default="$(optenv ARUCO_MARKER_SIZE 0.15)" />
+  <arg name="aruco_target_id" default="$(optenv ARUCO_TARGET_ID 503)" />
 
   <include file="$(find agv_bringup)/launch/bringup.launch">
     <arg name="enable_imu" value="$(arg enable_imu)" />
   </include>
 
-  <include file="$(find agv_bringup)/launch/apriltag.launch" />
+  <include file="$(find agv_bringup)/launch/aruco.launch">
+    <arg name="dictionary" value="$(arg aruco_dictionary)" />
+    <arg name="marker_size" value="$(arg aruco_marker_size)" />
+    <arg name="target_id" value="$(arg aruco_target_id)" />
+    <arg name="publish_image" value="false" />
+    <arg name="publish_pose" value="true" />
+  </include>
 
   <node pkg="rosbag" type="record" name="dataset_bagger" output="screen"
         args="--buffsize=2048 --lz4
@@ -39,7 +48,7 @@
               /camera/accel/imu_info
               /camera/gyro/imu_info
               /diagnostics
-              /tag_detections
+              /aruco/target_pose
               $(arg mocap_topic)
               /mocap" />
 
