@@ -42,8 +42,17 @@ private:
 	double wz;
 
 	ros::NodeHandle n;
+	ros::NodeHandle private_n;
 	ros::Publisher pub;
 	tf::TransformBroadcaster odomBroadcaster;
+
+	int baud_rate;
+	double linear_scale;
+	double lateral_scale;
+	double angular_scale;
+	double wheel_radius;
+	double wheel_base;
+	bool debug_output;
 };
 
 

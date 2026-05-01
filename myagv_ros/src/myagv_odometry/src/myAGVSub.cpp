@@ -4,19 +4,23 @@
 double linearX = 0.0;
 double linearY = 0.0;
 double angularZ = 0.0;
+bool debugOutput = false;
 
 void cmdCallback(const geometry_msgs::Twist& msg)
 {
 	linearX = msg.linear.x;
 	linearY = msg.linear.y;
 	angularZ = msg.angular.z;
-	std::cout << "cmdCallback: " << msg.linear.x << ", linearX: " << linearX << std::endl;
+	if (debugOutput)
+		std::cout << "cmdCallback: " << msg.linear.x << ", linearX: " << linearX << std::endl;
 }
 
 int main(int argc, char* argv[])
 {
 	ros::init(argc, argv, "myagv_odometry_node");
 	ros::NodeHandle n;
+	ros::NodeHandle private_n("~");
+	private_n.param<bool>("debug_output", debugOutput, false);
 	MyAGV myAGV;
 
 	if (!myAGV.init())

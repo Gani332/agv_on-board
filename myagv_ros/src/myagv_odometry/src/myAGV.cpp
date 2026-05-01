@@ -39,7 +39,7 @@ void receive()
     ;
 }
 
-MyAGV::MyAGV()
+MyAGV::MyAGV() : private_n("~")
 {
     x = 0.0;
     y = 0.0;
@@ -48,6 +48,14 @@ MyAGV::MyAGV()
     vx = 0.0;
     vy = 0.0;
     vtheta = 0.0;
+
+    baud_rate = 115200;
+    linear_scale = 1.0;
+    lateral_scale = 1.0;
+    angular_scale = 1.0;
+    wheel_radius = 0.0;
+    wheel_base = 0.0;
+    debug_output = false;
 }
 
 MyAGV::~MyAGV()
@@ -58,11 +66,39 @@ MyAGV::~MyAGV()
 bool MyAGV::init()
 {
     std::string serial_port;
-    n.param<std::string>("serial_port", serial_port, "/dev/ttyACM0");
+    private_n.param<std::string>("serial_port", serial_port, "/dev/ttyACM0");
+    private_n.param<int>("baud", baud_rate, 115200);
+    private_n.param<double>("linear_scale", linear_scale, 1.0);
+    private_n.param<double>("lateral_scale", lateral_scale, linear_scale);
+    private_n.param<double>("angular_scale", angular_scale, 1.0);
+    private_n.param<double>("wheel_radius", wheel_radius, 0.0);
+    private_n.param<double>("wheel_base", wheel_base, 0.0);
+    private_n.param<bool>("debug_output", debug_output, false);
+
+    if (baud_rate <= 0) {
+        ROS_WARN("Invalid baud=%d; falling back to 115200", baud_rate);
+        baud_rate = 115200;
+    }
+    if (linear_scale == 0.0) {
+        ROS_WARN("Invalid linear_scale=0.0; falling back to 1.0");
+        linear_scale = 1.0;
+    }
+    if (lateral_scale == 0.0) {
+        ROS_WARN("Invalid lateral_scale=0.0; falling back to 1.0");
+        lateral_scale = 1.0;
+    }
+    if (angular_scale == 0.0) {
+        ROS_WARN("Invalid angular_scale=0.0; falling back to 1.0");
+        angular_scale = 1.0;
+    }
+
     sp.open(serial_port);
     ROS_INFO("Opened serial port: %s", serial_port.c_str());
+    ROS_INFO("myAGV odom config: baud=%d linear_scale=%.6f lateral_scale=%.6f angular_scale=%.6f wheel_radius=%.6f wheel_base=%.6f",
+             baud_rate, linear_scale, lateral_scale, angular_scale,
+             wheel_radius, wheel_base);
 
-    sp.set_option(boost::asio::serial_port::baud_rate(115200));
+    sp.set_option(boost::asio::serial_port::baud_rate(baud_rate));
     sp.set_option(boost::asio::serial_port::flow_control(boost::asio::serial_port::flow_control::none));
     sp.set_option(boost::asio::serial_port::parity(boost::asio::serial_port::parity::none));
     sp.set_option(boost::asio::serial_port::stop_bits(boost::asio::serial_port::stop_bits::one));
@@ -174,9 +210,9 @@ bool MyAGV::readSpeed()
     	return false;
 	}
 
-    vx = (static_cast<double>(buf[index]) - 128.0) * 0.01;
-    vy = (static_cast<double>(buf[index + 1]) - 128.0) * 0.01;
-    vtheta = (static_cast<double>(buf[index + 2]) - 128.0) * 0.01;
+    vx = (static_cast<double>(buf[index]) - 128.0) * 0.01 * linear_scale;
+    vy = (static_cast<double>(buf[index + 1]) - 128.0) * 0.01 * lateral_scale;
+    vtheta = (static_cast<double>(buf[index + 2]) - 128.0) * 0.01 * angular_scale;
 
     ax = ((buf[index + 3] + buf[index + 4] * 256 ) - 10000) * 0.001;
     ay = ((buf[index + 5] + buf[index + 6] * 256 ) - 10000) * 0.001;
@@ -232,19 +268,18 @@ void MyAGV::writeSpeed(double movex, double movey, double rot)
     buf[4] = rot_send;
     buf[5] = check;
     
-    std::cout << "writeSpeed: ";
-    std::cout << movex;
-    // for (int i = 0; i < 6; ++i) {
-    //     std::cout << std::hex << std::setfill('0') << std::setw(2) << (int)(buf[i]) << " ";
-    // }
-    std::cout << std::endl;
+    if (debug_output) {
+        std::cout << "writeSpeed: " << movex << std::endl;
+    }
 
     boost::asio::write(sp, boost::asio::buffer(buf));
 }
 
 bool MyAGV::execute(double linearX, double linearY, double angularZ)
 {
-	std::cout << "execute: " << linearX << std::endl;
+    if (debug_output) {
+        std::cout << "execute: " << linearX << std::endl;
+    }
     writeSpeed(linearX, linearY, angularZ);
 
 	
