@@ -146,7 +146,7 @@ Use these paths for normal robot operation:
 
 ```text
 scripts/setup_robot.sh                     Build/check workspaces after clone or pull
-scripts/logging/start_session.sh           One-command bringup + AprilTag + rosbag + manifest
+scripts/logging/start_session.sh           One-command bringup + rosbag + manifest
 scripts/logging/validate_bag.py            Full post-run publishability check
 scripts/logging/audit_bag_fast.py          Fast topic/rate/gap/sync audit
 scripts/logging/drive_straight.py          Odom-bounded straight-line dataset helper
@@ -154,6 +154,9 @@ scripts/logging/drive_square.py            Odom-bounded square motion helper
 scripts/logging/drive_forward_back.py      Odom-bounded smoke-test motion helper
 agv_ws/src/agv_bringup/launch/bringup.launch
 agv_ws/src/agv_bringup/launch/logging.launch
+agv_ws/src/agv_bringup/launch/aruco.launch
+agv_ws/src/agv_bringup/launch/aruco_bringup.launch
+agv_ws/src/agv_bringup/launch/aruco_test.launch
 agv_ws/src/agv_bringup/launch/apriltag.launch
 agv_ws/src/agv_bringup/calibration/
 ```
@@ -199,7 +202,21 @@ Manual bringup without recording:
 roslaunch agv_bringup bringup.launch enable_imu:=false
 ```
 
-AprilTag only:
+Current ArUco marker test, using the 15 cm `DICT_ARUCO_ORIGINAL` marker id `503`:
+
+```bash
+roslaunch agv_bringup aruco_bringup.launch target_id:=503 marker_size:=0.15 publish_image:=false
+```
+
+This runs normal robot bringup plus the ArUco detector. It prints detections and publishes the target marker pose on `/aruco/target_pose` as `geometry_msgs/PoseStamped`. The pose frame is the RealSense optical frame, where `x` is right, `y` is down, and `z` is forward.
+
+Camera-only ArUco smoke test:
+
+```bash
+roslaunch agv_bringup aruco_test.launch target_id:=503 marker_size:=0.15 publish_image:=false
+```
+
+AprilTag detector only, for real AprilTag markers:
 
 ```bash
 roslaunch agv_bringup apriltag.launch
