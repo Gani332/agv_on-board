@@ -53,8 +53,6 @@ MyAGV::MyAGV() : private_n("~")
     linear_scale = 1.0;
     lateral_scale = 1.0;
     angular_scale = 1.0;
-    wheel_radius = 0.0;
-    wheel_base = 0.0;
     debug_output = false;
 }
 
@@ -71,8 +69,6 @@ bool MyAGV::init()
     private_n.param<double>("linear_scale", linear_scale, 1.0);
     private_n.param<double>("lateral_scale", lateral_scale, linear_scale);
     private_n.param<double>("angular_scale", angular_scale, 1.0);
-    private_n.param<double>("wheel_radius", wheel_radius, 0.0);
-    private_n.param<double>("wheel_base", wheel_base, 0.0);
     private_n.param<bool>("debug_output", debug_output, false);
 
     if (baud_rate <= 0) {
@@ -94,9 +90,9 @@ bool MyAGV::init()
 
     sp.open(serial_port);
     ROS_INFO("Opened serial port: %s", serial_port.c_str());
-    ROS_INFO("myAGV odom config: baud=%d linear_scale=%.6f lateral_scale=%.6f angular_scale=%.6f wheel_radius=%.6f wheel_base=%.6f",
+    ROS_INFO("myAGV odom config: baud=%d linear_scale=%.6f lateral_scale=%.6f angular_scale=%.6f debug_output=%s",
              baud_rate, linear_scale, lateral_scale, angular_scale,
-             wheel_radius, wheel_base);
+             debug_output ? "true" : "false");
 
     sp.set_option(boost::asio::serial_port::baud_rate(baud_rate));
     sp.set_option(boost::asio::serial_port::flow_control(boost::asio::serial_port::flow_control::none));

@@ -28,8 +28,8 @@ next step if the current one fails.
    rostopic echo /odom | grep position -A3
    ```
 5. Compute error: `reported_distance / actual_distance`.
-6. If error > 2%, adjust `wheel_radius` in `base.yaml`:
-   `new_wheel_radius = current_wheel_radius * (actual / reported)`
+6. If error > 2%, adjust `linear_scale` in `base.yaml`:
+   `new_linear_scale = current_linear_scale * (actual / reported)`
 
 ### Step 2 — Rotation calibration
 
@@ -42,12 +42,15 @@ next step if the current one fails.
    Stop after one full visual revolution.
 3. Read reported heading change from `/odom`.
 4. **Pass criterion:** heading error < 2°.
-5. If error > 2°, adjust `wheel_base` in `base.yaml`:
-   `new_wheel_base = current_wheel_base * (actual_degrees / 360.0)`
+5. If error > 2°, adjust `angular_scale` in `base.yaml`:
+   `new_angular_scale = current_angular_scale * (actual_degrees / reported_degrees)`
 
 ### Step 3 — Record results
 
-Update `calibration/extrinsics.yaml` → `odometry` section with measured values.
+Update `calibration/extrinsics.yaml` → `odometry` section with measured results.
+`wheel_radius_m` and `wheel_base_m` are physical documentation only; runtime
+odom correction is done with `linear_scale`, `lateral_scale`, and `angular_scale`
+in `base.yaml`.
 
 ---
 
