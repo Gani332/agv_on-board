@@ -4,9 +4,38 @@ Robot-side ROS Melodic stack for AGV data collection in the multi-robot SLAM dat
 
 The goal of this repo is repeatable deployment: clone or pull it on a robot, run one setup script, then collect bags with a single session command.
 
-## Quick Start
+## 🚀 Quick Start
 
-On a fresh or updated robot:
+On a new robot: 
+
+### 1. Installation
+On a fresh or updated robot, use one of the following methods to retrieve the stack.
+
+**Option A: Standard Clone (Try this first)**
+```bash
+git clone --depth 1 [https://github.com/Gani332/agv_on-board](https://github.com/Gani332/agv_on-board) .
+Rename the file to slam_project
+bash scripts/setup_robot.sh
+
+
+**Option B: Download Zip**
+```bash
+# Download the repository as a zip file
+wget [https://github.com/Gani332/agv_on-board/archive/refs/heads/main.zip](https://github.com/Gani332/agv_on-board/archive/refs/heads/main.zip)
+
+# Unzip the file
+unzip main.zip
+
+# Rename the resulting folder to slam_project
+mv agv_on-board-main slam_project
+
+# Remove the zip file to save space
+rm main.zip
+
+bash scripts/setup_robot.sh
+
+
+On a updated robot:
 
 ```bash
 cd ~/slam_project
