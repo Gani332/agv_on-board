@@ -29,6 +29,13 @@ MOCAP_TOPIC="${MOCAP_TOPIC:-/phasespace/rigids}"
 REQUIRE_GT="${REQUIRE_GT:-false}"
 REQUIRE_IMU="${REQUIRE_IMU:-false}"
 ENABLE_IMU="${ENABLE_IMU:-${REQUIRE_IMU}}"
+ENABLE_REALSENSE_SYNC="${ENABLE_REALSENSE_SYNC:-true}"
+CAMERA_COLOR_WIDTH="${CAMERA_COLOR_WIDTH:-640}"
+CAMERA_COLOR_HEIGHT="${CAMERA_COLOR_HEIGHT:-480}"
+CAMERA_COLOR_FPS="${CAMERA_COLOR_FPS:-15}"
+CAMERA_DEPTH_WIDTH="${CAMERA_DEPTH_WIDTH:-640}"
+CAMERA_DEPTH_HEIGHT="${CAMERA_DEPTH_HEIGHT:-480}"
+CAMERA_DEPTH_FPS="${CAMERA_DEPTH_FPS:-15}"
 SESSION_ID="${ROBOT_NAME}_${SCENARIO}_${DATESTAMP}"
 BAG_DIR="${HOME}/agv_data"
 BAG_FILE="${BAG_DIR}/${SESSION_ID}.bag"
@@ -171,6 +178,14 @@ mocap_topic: "${MOCAP_TOPIC}"
 ground_truth_required: ${REQUIRE_GT}
 imu_required: ${REQUIRE_IMU}
 enable_imu: ${ENABLE_IMU}
+enable_realsense_sync: ${ENABLE_REALSENSE_SYNC}
+camera_profile:
+  color_width: ${CAMERA_COLOR_WIDTH}
+  color_height: ${CAMERA_COLOR_HEIGHT}
+  color_fps: ${CAMERA_COLOR_FPS}
+  depth_width: ${CAMERA_DEPTH_WIDTH}
+  depth_height: ${CAMERA_DEPTH_HEIGHT}
+  depth_fps: ${CAMERA_DEPTH_FPS}
 notes: ""
 usb_mode_note: "D455 observed on USB 3.2; RGB-D stable. D455 IMU disabled by default because video+motion publishes no IMU messages on current wrapper/device stack."
 EOF
@@ -228,5 +243,12 @@ export MOCAP_TOPIC="$MOCAP_TOPIC"
 export REQUIRE_GT="$REQUIRE_GT"
 export REQUIRE_IMU="$REQUIRE_IMU"
 export ENABLE_IMU="$ENABLE_IMU"
+export ENABLE_REALSENSE_SYNC="$ENABLE_REALSENSE_SYNC"
+export CAMERA_COLOR_WIDTH="$CAMERA_COLOR_WIDTH"
+export CAMERA_COLOR_HEIGHT="$CAMERA_COLOR_HEIGHT"
+export CAMERA_COLOR_FPS="$CAMERA_COLOR_FPS"
+export CAMERA_DEPTH_WIDTH="$CAMERA_DEPTH_WIDTH"
+export CAMERA_DEPTH_HEIGHT="$CAMERA_DEPTH_HEIGHT"
+export CAMERA_DEPTH_FPS="$CAMERA_DEPTH_FPS"
 
 roslaunch agv_bringup logging.launch enable_imu:="${ENABLE_IMU}"

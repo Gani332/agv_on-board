@@ -1,6 +1,12 @@
 <launch>
   <arg name="enable_imu" default="false" />
   <arg name="enable_realsense_sync" default="true" />
+  <arg name="color_width" default="640" />
+  <arg name="color_height" default="480" />
+  <arg name="color_fps" default="15" />
+  <arg name="depth_width" default="640" />
+  <arg name="depth_height" default="480" />
+  <arg name="depth_fps" default="15" />
   <arg name="image_topic" default="/camera/color/image_raw" />
   <arg name="camera_info_topic" default="/camera/color/camera_info" />
   <arg name="dictionary" default="original" />
@@ -14,6 +20,12 @@
   <include file="$(find agv_bringup)/launch/bringup.launch">
     <arg name="enable_imu" value="$(arg enable_imu)" />
     <arg name="enable_realsense_sync" value="$(arg enable_realsense_sync)" />
+    <arg name="color_width" value="$(arg color_width)" />
+    <arg name="color_height" value="$(arg color_height)" />
+    <arg name="color_fps" value="$(arg color_fps)" />
+    <arg name="depth_width" value="$(arg depth_width)" />
+    <arg name="depth_height" value="$(arg depth_height)" />
+    <arg name="depth_fps" value="$(arg depth_fps)" />
   </include>
 
   <include file="$(find agv_bringup)/launch/aruco.launch">

@@ -2,6 +2,12 @@
 
   <arg name="enable_imu" default="false" />
   <arg name="enable_realsense_sync" default="true" />
+  <arg name="color_width" default="640" />
+  <arg name="color_height" default="480" />
+  <arg name="color_fps" default="15" />
+  <arg name="depth_width" default="640" />
+  <arg name="depth_height" default="480" />
+  <arg name="depth_fps" default="15" />
 
   <!-- 1. Start the AGV base driver (motion + odom + TF) -->
   <!-- serial_port: the USB-serial device for the STM32 base controller.
@@ -29,21 +35,22 @@
   <node pkg="tf" type="static_transform_publisher" name="base_footprint_to_base_link"
         args="0.0 0.0 0.0 0.0 0.0 0.0 /base_footprint /base_link 40" />
 
-  <!-- RealSense D455: 640x480 @ 15 Hz colour + aligned depth.
+  <!-- RealSense D455: colour + aligned depth.
        Live check on 2026-04-29: RGB/depth are stable on USB 3.2; the D455
        motion module publishes IMU only when video streams are disabled. Keep
        enable_imu=false for reliable RGB-D dataset recording until that driver/
-       device issue is fixed. align_depth is required for RGB-D SLAM. -->
+       device issue is fixed. align_depth is required for RGB-D SLAM.
+       Robot 2 may need a lower-load profile, e.g. 424x240 @ 15 Hz. -->
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
       <arg name="align_depth"         value="true"/>
       <arg name="enable_pointcloud"   value="false"/>
       <arg name="enable_sync"         value="$(arg enable_realsense_sync)"/>
-      <arg name="color_width"         value="640"/>
-      <arg name="color_height"        value="480"/>
-      <arg name="color_fps"           value="15"/>
-      <arg name="depth_width"         value="640"/>
-      <arg name="depth_height"        value="480"/>
-      <arg name="depth_fps"           value="15"/>
+      <arg name="color_width"         value="$(arg color_width)"/>
+      <arg name="color_height"        value="$(arg color_height)"/>
+      <arg name="color_fps"           value="$(arg color_fps)"/>
+      <arg name="depth_width"         value="$(arg depth_width)"/>
+      <arg name="depth_height"        value="$(arg depth_height)"/>
+      <arg name="depth_fps"           value="$(arg depth_fps)"/>
       <arg name="enable_accel"        value="$(arg enable_imu)"/>
       <arg name="enable_gyro"         value="$(arg enable_imu)"/>
       <arg name="unite_imu_method"    value="linear_interpolation"/>
