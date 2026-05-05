@@ -63,6 +63,7 @@
               /camera/gyro/imu_info
               /diagnostics
               /aruco/target_pose
+              /tag_detections
               $(arg mocap_topic)
               /mocap" />
 

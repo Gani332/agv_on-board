@@ -216,16 +216,16 @@ Camera-only ArUco smoke test:
 roslaunch agv_bringup aruco_test.launch target_id:=503 marker_size:=0.15 publish_image:=false
 ```
 
-AprilTag detector only, for real AprilTag markers:
+AprilTag detector only, for the project `tag36h11` ID 0 marker with 80 mm code size:
 
 ```bash
 roslaunch agv_bringup apriltag.launch
 ```
 
-Laptop-screen AprilTag smoke test, using `tag36h11` id `0` with 80 mm code size:
+Override the tag file when testing a different marker layout:
 
 ```bash
-roslaunch agv_bringup apriltag.launch tags_file:=$(rospack find agv_bringup)/config/tags_tag36h11_id0_80mm.yaml
+roslaunch agv_bringup apriltag.launch tags_file:=$(rospack find agv_bringup)/config/tags.yaml
 ```
 
 Production recording:
