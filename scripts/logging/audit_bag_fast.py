@@ -38,6 +38,13 @@ MIN_HZ = {
     "/camera/aligned_depth_to_color/camera_info": 12.0,
 }
 
+IMU_TOPICS = [
+    "/imu",
+    "/camera/imu",
+    "/camera/accel/sample",
+    "/camera/gyro/sample",
+]
+
 
 def stamp_to_sec(stamp):
     return stamp.secs + stamp.nsecs * 1e-9
@@ -193,6 +200,18 @@ def main():
         print("  odom_first=({:.3f},{:.3f}) odom_last=({:.3f},{:.3f}) max_from_start_m={:.3f}".format(
             odom_first[0], odom_first[1], odom_last[0], odom_last[1],
             odom_max_from_start))
+
+    print("")
+    print("imu:")
+    for topic in IMU_TOPICS:
+        count = counts.get(topic, 0)
+        rate = count / duration if duration > 0 else 0.0
+        if count:
+            print("  {:48s} count={:<6d} hz={:6.2f} max_recv_gap={:6.3f}s max_stamp_gap={:6.3f}s".format(
+                topic, count, rate, max_gap(recv_times[topic]),
+                max_gap(header_times[topic])))
+        else:
+            print("  {:48s} count=0".format(topic))
 
     print("")
     print("markers:")

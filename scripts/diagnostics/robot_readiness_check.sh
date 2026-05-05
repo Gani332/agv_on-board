@@ -114,12 +114,14 @@ check_hz /odom 12 20
 check_hz /tf 12 30
 check_hz /camera/color/image_raw 12 20
 check_hz /camera/aligned_depth_to_color/image_raw 12 20
+    check_optional_hz /imu 8 10
     check_optional_hz /camera/imu 8 20
     check_optional_hz /camera/accel/sample 8 20
     check_optional_hz /camera/gyro/sample 8 20
 
 print_section "tf checks"
 timeout 8 rosrun tf tf_echo /base_footprint /base_link 2>&1 | sed -n '1,12p' || true
+timeout 8 rosrun tf tf_echo /base_footprint /imu_link 2>&1 | sed -n '1,12p' || true
 timeout 8 rosrun tf tf_echo /base_footprint /camera_link 2>&1 | sed -n '1,12p' || true
 timeout 8 rosrun tf tf_echo /base_footprint /laser_frame 2>&1 | sed -n '1,12p' || true
 

@@ -35,6 +35,11 @@
   <node pkg="tf" type="static_transform_publisher" name="base_footprint_to_base_link"
         args="0.0 0.0 0.0 0.0 0.0 0.0 /base_footprint /base_link 40" />
 
+  <!-- Base MCU IMU frame. The /imu topic comes from myagv_odometry_node,
+       not from the D455 motion module. -->
+  <node pkg="tf" type="static_transform_publisher" name="base_to_imu_link"
+        args="0.0 0.0 0.0 0.0 3.14159 3.14159 /base_footprint /imu_link 40" />
+
   <!-- RealSense D455: colour + aligned depth.
        Live check on 2026-04-29: RGB/depth are stable on USB 3.2; the D455
        motion module publishes IMU only when video streams are disabled. Keep

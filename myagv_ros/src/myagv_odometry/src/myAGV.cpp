@@ -1,11 +1,13 @@
 #include <vector>
 #include <iostream>
 #include <iomanip>
+#include <cmath>
 
 #include "myagv_odometry/myAGV.h"
 
 //const unsigned char ender[2] = { 0x0d, 0x0a };
 const unsigned char header[2] = { 0xfe, 0xfe };
+const double DEG_TO_RAD = 3.14159265358979323846 / 180.0;
 //const int SPEED_INFO = 0xa55a;
 //const int GET_SPEED = 0xaaaa;
 //const double ROBOT_RADIUS = 105.00;
@@ -53,6 +55,8 @@ MyAGV::MyAGV() : private_n("~")
     linear_scale = 1.0;
     lateral_scale = 1.0;
     angular_scale = 1.0;
+    publish_imu = true;
+    imu_frame_id = "imu_link";
     debug_output = false;
 }
 
@@ -69,6 +73,8 @@ bool MyAGV::init()
     private_n.param<double>("linear_scale", linear_scale, 1.0);
     private_n.param<double>("lateral_scale", lateral_scale, linear_scale);
     private_n.param<double>("angular_scale", angular_scale, 1.0);
+    private_n.param<bool>("publish_imu", publish_imu, true);
+    private_n.param<std::string>("imu_frame_id", imu_frame_id, "imu_link");
     private_n.param<bool>("debug_output", debug_output, false);
 
     if (baud_rate <= 0) {
@@ -105,6 +111,10 @@ bool MyAGV::init()
     lastTime = ros::Time::now();
 
     pub = n.advertise<nav_msgs::Odometry>("odom", 50);
+    if (publish_imu) {
+        pub_imu = n.advertise<sensor_msgs::Imu>("imu", 50);
+        ROS_INFO("Publishing base IMU on /imu with frame_id=%s", imu_frame_id.c_str());
+    }
 
     return true;
 }
@@ -214,9 +224,9 @@ bool MyAGV::readSpeed()
     ay = ((buf[index + 5] + buf[index + 6] * 256 ) - 10000) * 0.001;
     az = ((buf[index + 7] + buf[index + 8] * 256 ) - 10000) * 0.001;
 
-    wx = ((buf[index + 9] + buf[index + 10] * 256 ) - 10000) * 0.1;
-    wy = ((buf[index + 11] + buf[index + 12] * 256 ) - 10000) * 0.1;
-    wz = ((buf[index + 13] + buf[index + 14] * 256 ) - 10000) * 0.1;
+    wx = ((buf[index + 9] + buf[index + 10] * 256 ) - 10000) * 0.1 * DEG_TO_RAD;
+    wy = ((buf[index + 11] + buf[index + 12] * 256 ) - 10000) * 0.1 * DEG_TO_RAD;
+    wz = ((buf[index + 13] + buf[index + 14] * 256 ) - 10000) * 0.1 * DEG_TO_RAD;
 
     currentTime = ros::Time::now();
 
@@ -271,6 +281,33 @@ void MyAGV::writeSpeed(double movex, double movey, double rot)
     boost::asio::write(sp, boost::asio::buffer(buf));
 }
 
+void MyAGV::publishImuSensor()
+{
+    if (!publish_imu) {
+        return;
+    }
+
+    sensor_msgs::Imu msg;
+    msg.header.stamp = currentTime;
+    msg.header.frame_id = imu_frame_id;
+
+    // The base MCU packet contains accel and gyro only. Mark orientation as
+    // unavailable so downstream filters do not treat the identity quaternion as
+    // a measured attitude.
+    msg.orientation.w = 1.0;
+    msg.orientation_covariance[0] = -1.0;
+
+    msg.angular_velocity.x = wx;
+    msg.angular_velocity.y = wy;
+    msg.angular_velocity.z = wz;
+
+    msg.linear_acceleration.x = ax;
+    msg.linear_acceleration.y = ay;
+    msg.linear_acceleration.z = az;
+
+    pub_imu.publish(msg);
+}
+
 bool MyAGV::execute(double linearX, double linearY, double angularZ)
 {
     if (debug_output) {
@@ -278,8 +315,9 @@ bool MyAGV::execute(double linearX, double linearY, double angularZ)
     }
     writeSpeed(linearX, linearY, angularZ);
 
-	
-    readSpeed(); // easy to report error 
+    if (!readSpeed()) {
+        return false;
+    }
 
     geometry_msgs::TransformStamped odom_trans;
     odom_trans.header.stamp = currentTime;
@@ -313,5 +351,6 @@ bool MyAGV::execute(double linearX, double linearY, double angularZ)
     msgl.twist.covariance = odom_twist_covariance;
 
     pub.publish(msgl);
+    publishImuSensor();
     return true;
 }
