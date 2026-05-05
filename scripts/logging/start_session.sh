@@ -204,13 +204,14 @@ echo "Press Ctrl+C to stop recording."
 echo ""
 
 # ---------------------------------------------------------------------------
-# Record start time for duration calculation
+# Launch bringup, wait for sensors, then record.
 # ---------------------------------------------------------------------------
 START_EPOCH=$(date +%s)
+BRINGUP_PID=""
+ARUCO_PID=""
+ROSBAG_PID=""
+CLEANED_UP=false
 
-# ---------------------------------------------------------------------------
-# Launch logging (trap Ctrl+C to finalise manifest)
-# ---------------------------------------------------------------------------
 finalise_manifest() {
     echo ""
     echo "=== Finalising manifest ==="
@@ -238,9 +239,42 @@ finalise_manifest() {
     echo "  python3 scripts/logging/validate_bag.py ${BAG_DIR}/${SESSION_ID}.bag"
 }
 
-trap finalise_manifest EXIT
+cleanup() {
+    if [ "$CLEANED_UP" = true ]; then
+        return
+    fi
+    CLEANED_UP=true
+    trap - EXIT INT TERM
 
-# Export env vars for logging.launch
+    if [ -n "${ROSBAG_PID}" ] && kill -0 "${ROSBAG_PID}" 2>/dev/null; then
+        echo ""
+        echo "Stopping rosbag..."
+        kill -INT "${ROSBAG_PID}" 2>/dev/null || true
+        wait "${ROSBAG_PID}" 2>/dev/null || true
+    fi
+    if [ -n "${ARUCO_PID}" ] && kill -0 "${ARUCO_PID}" 2>/dev/null; then
+        echo "Stopping ArUco detector..."
+        kill -INT "${ARUCO_PID}" 2>/dev/null || true
+        wait "${ARUCO_PID}" 2>/dev/null || true
+    fi
+    if [ -n "${BRINGUP_PID}" ] && kill -0 "${BRINGUP_PID}" 2>/dev/null; then
+        echo "Stopping bringup..."
+        kill -INT "${BRINGUP_PID}" 2>/dev/null || true
+        wait "${BRINGUP_PID}" 2>/dev/null || true
+    fi
+
+    finalise_manifest
+}
+
+handle_signal() {
+    cleanup
+    exit 130
+}
+
+trap cleanup EXIT
+trap handle_signal INT TERM
+
+# Export env vars for any launched child tools.
 export ROBOT_NAME="$ROBOT_NAME"
 export SCENARIO="$SCENARIO"
 export DATESTAMP="$DATESTAMP"
@@ -257,4 +291,82 @@ export CAMERA_DEPTH_WIDTH="$CAMERA_DEPTH_WIDTH"
 export CAMERA_DEPTH_HEIGHT="$CAMERA_DEPTH_HEIGHT"
 export CAMERA_DEPTH_FPS="$CAMERA_DEPTH_FPS"
 
-roslaunch agv_bringup logging.launch enable_imu:="${ENABLE_IMU}"
+wait_for_topic_rate() {
+    topic="$1"
+    timeout_s="$2"
+    end=$((SECONDS + timeout_s))
+    while [ "$SECONDS" -lt "$end" ]; do
+        if timeout 6 rostopic hz "$topic" --window 10 2>/dev/null | grep -q "average rate"; then
+            echo "  [OK] $topic publishing"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "ERROR: timed out waiting for $topic" >&2
+    return 1
+}
+
+BRINGUP_LOG="${BAG_DIR}/${SESSION_ID}_bringup.log"
+echo "Starting bringup first; log: ${BRINGUP_LOG}"
+roslaunch agv_bringup bringup.launch \
+    enable_imu:="${ENABLE_IMU}" \
+    enable_realsense_sync:="${ENABLE_REALSENSE_SYNC}" \
+    color_width:="${CAMERA_COLOR_WIDTH}" \
+    color_height:="${CAMERA_COLOR_HEIGHT}" \
+    color_fps:="${CAMERA_COLOR_FPS}" \
+    depth_width:="${CAMERA_DEPTH_WIDTH}" \
+    depth_height:="${CAMERA_DEPTH_HEIGHT}" \
+    depth_fps:="${CAMERA_DEPTH_FPS}" \
+    > "${BRINGUP_LOG}" 2>&1 &
+BRINGUP_PID=$!
+
+echo "Waiting for required sensor streams before recording..."
+wait_for_topic_rate /scan 45
+wait_for_topic_rate /odom 45
+wait_for_topic_rate /camera/color/image_raw 60
+wait_for_topic_rate /camera/aligned_depth_to_color/image_raw 60
+if [ "$REQUIRE_IMU" = true ]; then
+    wait_for_topic_rate /imu 45
+fi
+
+if [ "$ENABLE_ARUCO" = true ]; then
+    ARUCO_LOG="${BAG_DIR}/${SESSION_ID}_aruco.log"
+    echo "Starting optional ArUco detector; log: ${ARUCO_LOG}"
+    roslaunch agv_bringup aruco.launch \
+        dictionary:="${ARUCO_DICTIONARY:-original}" \
+        marker_size:="${ARUCO_MARKER_SIZE:-0.15}" \
+        target_id:="${ARUCO_TARGET_ID:-503}" \
+        publish_image:=false \
+        publish_pose:=true \
+        > "${ARUCO_LOG}" 2>&1 &
+    ARUCO_PID=$!
+fi
+
+echo "Sensors are live; starting rosbag."
+START_EPOCH=$(date +%s)
+rosbag record --buffsize=2048 --lz4 -O "${BAG_FILE}" \
+    /scan \
+    /odom \
+    /cmd_vel \
+    /tf \
+    /tf_static \
+    /camera/color/image_raw \
+    /camera/color/camera_info \
+    /camera/depth/camera_info \
+    /camera/aligned_depth_to_color/image_raw \
+    /camera/aligned_depth_to_color/camera_info \
+    /camera/extrinsics/depth_to_color \
+    /imu \
+    /camera/imu \
+    /camera/accel/sample \
+    /camera/gyro/sample \
+    /camera/accel/imu_info \
+    /camera/gyro/imu_info \
+    /diagnostics \
+    /aruco/target_pose \
+    /tag_detections \
+    "${MOCAP_TOPIC}" \
+    /mocap &
+ROSBAG_PID=$!
+wait "${ROSBAG_PID}"
+ROSBAG_PID=""
