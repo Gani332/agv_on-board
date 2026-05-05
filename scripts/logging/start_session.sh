@@ -28,7 +28,10 @@ DATESTAMP=$(date +%Y%m%d_%H%M%S)
 MOCAP_TOPIC="${MOCAP_TOPIC:-/phasespace/rigids}"
 REQUIRE_GT="${REQUIRE_GT:-false}"
 REQUIRE_IMU="${REQUIRE_IMU:-false}"
-ENABLE_IMU="${ENABLE_IMU:-${REQUIRE_IMU}}"
+# Camera IMU is intentionally independent from REQUIRE_IMU. The dataset IMU
+# requirement is satisfied by the base /imu publisher; enabling the D455 motion
+# module has caused RGB-D recording failures on this robot stack.
+ENABLE_IMU="${ENABLE_IMU:-false}"
 ENABLE_REALSENSE_SYNC="${ENABLE_REALSENSE_SYNC:-true}"
 CAMERA_COLOR_WIDTH="${CAMERA_COLOR_WIDTH:-640}"
 CAMERA_COLOR_HEIGHT="${CAMERA_COLOR_HEIGHT:-480}"
