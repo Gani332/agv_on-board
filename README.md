@@ -222,6 +222,12 @@ AprilTag detector only, for real AprilTag markers:
 roslaunch agv_bringup apriltag.launch
 ```
 
+Laptop-screen AprilTag smoke test, using `tag36h11` id `0` with 80 mm code size:
+
+```bash
+roslaunch agv_bringup apriltag.launch tags_file:=$(rospack find agv_bringup)/config/tags_tag36h11_id0_80mm.yaml
+```
+
 Production recording:
 
 ```bash
