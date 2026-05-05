@@ -42,10 +42,20 @@ require_file() {
     fi
 }
 
+ensure_catkin_workspace() {
+    if [ ! -d "$1/src" ]; then
+        echo "ERROR: missing catkin workspace src directory: $1/src" >&2
+        exit 1
+    fi
+    if [ ! -f "$1/.catkin_workspace" ]; then
+        touch "$1/.catkin_workspace"
+    fi
+}
+
 section "repo"
 echo "root: ${ROOT}"
-require_file "${ROOT}/myagv_ros/.catkin_workspace"
-require_file "${ROOT}/agv_ws/.catkin_workspace"
+ensure_catkin_workspace "${ROOT}/myagv_ros"
+ensure_catkin_workspace "${ROOT}/agv_ws"
 
 if [ "$INSTALL_SYSTEM" = true ]; then
     section "system dependencies"
@@ -60,6 +70,7 @@ if [ "$INSTALL_SYSTEM" = true ]; then
         python3-yaml \
         ros-melodic-apriltag-ros \
         ros-melodic-cv-bridge \
+        ros-melodic-ddynamic-reconfigure \
         ros-melodic-diagnostic-msgs \
         ros-melodic-geometry-msgs \
         ros-melodic-image-transport-plugins \
@@ -70,10 +81,15 @@ if [ "$INSTALL_SYSTEM" = true ]; then
         ros-melodic-tf \
         ros-melodic-tf2-msgs
 
-    if apt-cache show librealsense2-dev >/dev/null 2>&1; then
+    if apt-cache show ros-melodic-librealsense2 >/dev/null 2>&1; then
+        sudo apt-get install -y \
+            ros-melodic-librealsense2 \
+            ros-melodic-realsense2-camera \
+            ros-melodic-realsense2-description
+    elif apt-cache show librealsense2-dev >/dev/null 2>&1; then
         sudo apt-get install -y librealsense2-dev librealsense2-utils
     else
-        echo "WARN: librealsense2-dev not available from configured apt sources."
+        echo "WARN: librealsense2 packages not available from configured apt sources."
         echo "      Install Intel RealSense packages separately if this robot is fresh."
     fi
 
