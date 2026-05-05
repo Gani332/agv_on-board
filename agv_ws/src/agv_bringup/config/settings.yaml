@@ -2,7 +2,7 @@
 # tag36h11 is the default family used for the project test tags.
 tag_family: 'tag36h11'
 tag_threads: 2
-tag_decimate: 1.0
+tag_decimate: 2.0
 tag_blur: 0.0
 tag_refine_edges: 1
 tag_debug: 0
