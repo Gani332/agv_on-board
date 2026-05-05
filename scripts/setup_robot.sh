@@ -13,6 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INSTALL_SYSTEM=true
+REQUIRED_LIBREALSENSE_VERSION="${REQUIRED_LIBREALSENSE_VERSION:-2.57.6}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -42,6 +43,22 @@ require_file() {
     fi
 }
 
+check_realsense_version() {
+    section "realsense sdk"
+    if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists realsense2; then
+        local version
+        version="$(pkg-config --modversion realsense2)"
+        echo "pkg-config realsense2: ${version}"
+        if [ "${version}" != "${REQUIRED_LIBREALSENSE_VERSION}" ]; then
+            echo "WARN: validated RealSense SDK is ${REQUIRED_LIBREALSENSE_VERSION}, found ${version}."
+            echo "      Install librealsense2 ${REQUIRED_LIBREALSENSE_VERSION} runtime/dev headers and rebuild agv_ws before scenario runs."
+        fi
+    else
+        echo "WARN: realsense2 pkg-config metadata not found."
+        echo "      Install librealsense2 ${REQUIRED_LIBREALSENSE_VERSION} runtime/dev headers before scenario runs."
+    fi
+}
+
 ensure_catkin_workspace() {
     if [ ! -d "$1/src" ]; then
         echo "ERROR: missing catkin workspace src directory: $1/src" >&2
@@ -65,6 +82,7 @@ if [ "$INSTALL_SYSTEM" = true ]; then
         chrony \
         cmake \
         git \
+        pkg-config \
         python-opencv \
         python3-pip \
         python3-yaml \
@@ -81,13 +99,15 @@ if [ "$INSTALL_SYSTEM" = true ]; then
         ros-melodic-tf \
         ros-melodic-tf2-msgs
 
-    if apt-cache show ros-melodic-librealsense2 >/dev/null 2>&1; then
+    if apt-cache show librealsense2-dev >/dev/null 2>&1; then
+        sudo apt-get install -y librealsense2-dev librealsense2-utils
+    elif apt-cache show ros-melodic-librealsense2 >/dev/null 2>&1; then
         sudo apt-get install -y \
             ros-melodic-librealsense2 \
             ros-melodic-realsense2-camera \
             ros-melodic-realsense2-description
-    elif apt-cache show librealsense2-dev >/dev/null 2>&1; then
-        sudo apt-get install -y librealsense2-dev librealsense2-utils
+        echo "WARN: installed ROS Melodic librealsense packages because Intel packages were not available."
+        echo "      This may provide an older SDK than the validated ${REQUIRED_LIBREALSENSE_VERSION} stack."
     else
         echo "WARN: librealsense2 packages not available from configured apt sources."
         echo "      Install Intel RealSense packages separately if this robot is fresh."
@@ -106,6 +126,8 @@ fi
 if ! chronyc tracking >/dev/null 2>&1; then
     echo "WARN: chrony is installed but not reporting tracking status yet."
 fi
+
+check_realsense_version
 
 section "data directories"
 mkdir -p "${HOME}/agv_data"

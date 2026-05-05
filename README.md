@@ -6,22 +6,22 @@ The goal of this repo is repeatable deployment: clone or pull it on a robot, run
 
 ## 🚀 Quick Start
 
-On a new robot: 
+On a new robot:
 
 ### 1. Installation
 On a fresh or updated robot, use one of the following methods to retrieve the stack.
 
 **Option A: Standard Clone (Try this first)**
 ```bash
-git clone --depth 1 [https://github.com/Gani332/agv_on-board](https://github.com/Gani332/agv_on-board) .
-Rename the file to slam_project
+git clone --depth 1 https://github.com/Gani332/agv_on-board.git ~/slam_project
+cd ~/slam_project
 bash scripts/setup_robot.sh
 ```
 
 **Option B: Download Zip**
 ```bash
 # Download the repository as a zip file
-wget [https://github.com/Gani332/agv_on-board/archive/refs/heads/main.zip](https://github.com/Gani332/agv_on-board/archive/refs/heads/main.zip)
+wget https://github.com/Gani332/agv_on-board/archive/refs/heads/main.zip
 
 # Unzip the file
 unzip main.zip
@@ -36,7 +36,7 @@ bash scripts/setup_robot.sh
 ```
 
 
-On a updated robot:
+On an updated robot:
 
 ```bash
 cd ~/slam_project
@@ -49,12 +49,34 @@ bash scripts/setup_robot.sh
 `bash scripts/setup_robot.sh --skip-system` only when the robot is already
 provisioned or has no internet access.
 
+### RealSense Dependency
+
+The D455 RGB-D stack is validated with `librealsense2` v2.57.6. Fresh robots
+should use the Intel RealSense SDK 2.57.6 runtime, development headers, utils,
+and udev rules before rebuilding `agv_ws`. The vendored `realsense2_camera`
+wrapper in this repo must build and run against the same SDK version.
+
+Avoid mixing this workspace with the older ROS Melodic apt SDK headers
+(`ros-melodic-librealsense2`, commonly v2.50.0). On a correctly provisioned
+robot, `roslaunch agv_bringup bringup.launch` prints:
+
+```text
+Built with LibRealSense v2.57.6
+Running with LibRealSense v2.57.6
+```
+
+Check the installed SDK headers with:
+
+```bash
+pkg-config --modversion realsense2
+```
+
 Start a data collection session:
 
 ```bash
 cd ~/slam_project
 export REQUIRE_GT=false
-export REQUIRE_IMU=false
+export REQUIRE_IMU=true
 bash scripts/logging/start_session.sh agv1 square_manual
 ```
 
@@ -90,7 +112,7 @@ Terminal 1, record a straight-line bag:
 ssh ubuntu@<robot-ip>
 cd ~/slam_project
 export REQUIRE_GT=false
-export REQUIRE_IMU=false
+export REQUIRE_IMU=true
 bash scripts/logging/start_session.sh agv1 straight_slow
 ```
 
@@ -118,7 +140,7 @@ Then record a square bag:
 ssh ubuntu@<robot-ip>
 cd ~/slam_project
 export REQUIRE_GT=false
-export REQUIRE_IMU=false
+export REQUIRE_IMU=true
 bash scripts/logging/start_session.sh agv1 square_slow
 ```
 
@@ -260,6 +282,7 @@ Default robot bag topics:
 /camera/aligned_depth_to_color/image_raw
 /camera/aligned_depth_to_color/camera_info
 /camera/extrinsics/depth_to_color
+/imu
 /diagnostics
 /aruco/target_pose
 ```
@@ -287,18 +310,20 @@ when ground truth must be present in the same ROS graph. If PhaseSpace ground tr
 
 ## Current Validated Baseline
 
-Live robot bag checked on 2026-04-29:
+Live robot bag checked on 2026-05-05, Robot 2, normal RGB-D logging with base
+`/imu` and no detector:
 
 ```text
-bag: agv1_square_manual_20260429_224111.bag
-duration: 85.1 s
-/scan: 17.93 Hz
-/odom: 12.65 Hz
-/camera/color/image_raw: 14.96 Hz
-/camera/aligned_depth_to_color/image_raw: 14.96 Hz
-/tf: 87.02 Hz
+duration: 45.0 s
+/scan: 17.67 Hz
+/odom: 12.63 Hz
+/imu: 12.65 Hz
+/camera/color/image_raw: 15.01 Hz
+/camera/aligned_depth_to_color/image_raw: 15.01 Hz
+/tf: 111.56 Hz
 camera color/depth sync: 0.00 ms median, 0.00 ms max
 diagnostics: 0 warnings, 0 errors
+validator: FAIL 0
 overall audit: PASS
 ```
 
@@ -307,7 +332,7 @@ This is good enough for robot-only Week 1 SLAM smoke validation.
 Known limitations:
 
 ```text
-RealSense D455 IMU is disabled by default. The current D455/wrapper/firmware stack publishes IMU in IMU-only mode, but not while RGB-D video is active.
+Dataset /imu is published from the AGV base MCU through myagv_odometry_node. The RealSense D455 camera IMU remains disabled by default because the current D455/wrapper/firmware stack publishes camera IMU in IMU-only mode, but not reliably while RGB-D video is active.
 ArUco target pose publishes only when the configured marker is visible; the current test marker is DICT_ARUCO_ORIGINAL id 503 with 0.15 m side length.
 Ground truth is optional by default because PhaseSpace may be recorded separately on a chrony-synced machine.
 ```
@@ -319,6 +344,7 @@ odom
 └── base_footprint
     ├── base_link          static alias, colocated
     ├── laser_frame        z=0.100 m measured
+    ├── imu_link           base MCU IMU, colocated
     └── camera_link        CAD extrinsic from original mount
         ├── camera_color_frame
         ├── camera_depth_frame
@@ -333,6 +359,9 @@ base_footprint -> base_link:
 
 base_footprint -> laser_frame:
   xyz=(0, 0, 0.100), rpy=(0, 0, 0)
+
+base_footprint -> imu_link:
+  xyz=(0, 0, 0), rpy=(0, pi, pi)
 
 base_footprint -> camera_link:
   xyz=(-0.132025, 0.000153, 0.187925)
@@ -368,7 +397,8 @@ Expected warnings for the current robot-only setup:
 
 ```text
 ground truth missing, unless REQUIRE_GT=true
-IMU missing, unless REQUIRE_IMU=true
+camera IMU topics missing are expected; base /imu should be present by default
+target marker topics may be empty when no marker is visible
 ```
 
 ## Copy Bags To Laptop
@@ -395,6 +425,8 @@ rm -f ~/agv_data/*.bag ~/agv_data/*.bag.active ~/agv_data/*_manifest.yaml ~/agv_
 AGV base controller: /dev/ttyACM0
 YDLiDAR X2:          /dev/ttyAMA0
 RealSense D455:      USB 3.x, RGB-D 640x480 at 15 Hz
+RealSense SDK:       librealsense2 v2.57.6 runtime + dev headers
+Base IMU topic:      /imu at about 12.6 Hz, frame_id=imu_link
 ```
 
 ## Scaling To More Robots
@@ -402,8 +434,9 @@ RealSense D455:      USB 3.x, RGB-D 640x480 at 15 Hz
 For each robot:
 
 1. Clone/pull this repo to `~/slam_project`.
-2. Run `bash scripts/setup_robot.sh`.
-3. Assign a stable robot name, e.g. `agv1`, `agv2`, `agv3`.
-4. Record with `bash scripts/logging/start_session.sh <robot_name> <scenario>`.
-5. Keep robot bags and any separate PhaseSpace logs named with the same robot/scenario/timestamp convention.
-6. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.
+2. Confirm the robot has `librealsense2` v2.57.6 runtime and dev headers.
+3. Run `bash scripts/setup_robot.sh`.
+4. Assign a stable robot name, e.g. `agv1`, `agv2`, `agv3`.
+5. Record with `bash scripts/logging/start_session.sh <robot_name> <scenario>`.
+6. Keep robot bags and any separate PhaseSpace logs named with the same robot/scenario/timestamp convention.
+7. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.
