@@ -256,6 +256,12 @@ Production recording:
 bash scripts/logging/start_session.sh <robot_name> <scenario_name>
 ```
 
+Normal scenario recording keeps live marker detection off so the robot
+prioritises stable RGB-D, LiDAR, odom, TF, and base `/imu` logging. If a run
+explicitly needs the live ArUco detector, set `ENABLE_ARUCO=true` before
+starting the session; otherwise detect markers offline from the recorded images
+or run `aruco_bringup.launch` as a separate smoke test.
+
 `start_session.sh` writes:
 
 ```text
@@ -284,12 +290,13 @@ Default robot bag topics:
 /camera/extrinsics/depth_to_color
 /imu
 /diagnostics
-/aruco/target_pose
 ```
 
 Optional topics are included when available:
 
 ```text
+/aruco/target_pose
+/tag_detections
 /camera/imu
 /camera/accel/sample
 /camera/gyro/sample
@@ -333,7 +340,7 @@ Known limitations:
 
 ```text
 Dataset /imu is published from the AGV base MCU through myagv_odometry_node. The RealSense D455 camera IMU remains disabled by default because the current D455/wrapper/firmware stack publishes camera IMU in IMU-only mode, but not reliably while RGB-D video is active.
-ArUco target pose publishes only when the configured marker is visible; the current test marker is DICT_ARUCO_ORIGINAL id 503 with 0.15 m side length.
+Live ArUco detection is disabled by default during dataset recording to protect RGB-D throughput. Enable it only with ENABLE_ARUCO=true. The current test marker is DICT_ARUCO_ORIGINAL id 503 with 0.15 m side length.
 Ground truth is optional by default because PhaseSpace may be recorded separately on a chrony-synced machine.
 ```
 
