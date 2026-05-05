@@ -4,6 +4,7 @@ devel/
 install/
 logs/
 .catkin_workspace
+src/CMakeLists.txt
 *.pyc
 
 # IDEs

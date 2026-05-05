@@ -4,6 +4,9 @@ devel/
 install/
 logs/
 .catkin_workspace
+src/CMakeLists.txt
+src/realsense-ros/realsense2_camera/CATKIN_IGNORE
+src/realsense-ros/realsense2_description/CATKIN_IGNORE
 *.pyc
 __pycache__/
 

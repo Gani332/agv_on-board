@@ -111,6 +111,13 @@ section "data directories"
 mkdir -p "${HOME}/agv_data"
 echo "bags: ${HOME}/agv_data"
 
+if [ "${USE_SYSTEM_REALSENSE:-false}" = true ]; then
+    section "workspace package selection"
+    touch "${ROOT}/agv_ws/src/realsense-ros/realsense2_camera/CATKIN_IGNORE"
+    touch "${ROOT}/agv_ws/src/realsense-ros/realsense2_description/CATKIN_IGNORE"
+    echo "using system ROS realsense2_camera package"
+fi
+
 section "build myagv_ros"
 source /opt/ros/melodic/setup.bash
 cd "${ROOT}/myagv_ros"
