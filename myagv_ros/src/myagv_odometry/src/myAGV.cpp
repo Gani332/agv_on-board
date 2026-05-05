@@ -8,6 +8,7 @@
 //const unsigned char ender[2] = { 0x0d, 0x0a };
 const unsigned char header[2] = { 0xfe, 0xfe };
 const double DEG_TO_RAD = 3.14159265358979323846 / 180.0;
+const double STANDARD_GRAVITY = 9.80665;
 //const int SPEED_INFO = 0xa55a;
 //const int GET_SPEED = 0xaaaa;
 //const double ROBOT_RADIUS = 105.00;
@@ -220,9 +221,9 @@ bool MyAGV::readSpeed()
     vy = (static_cast<double>(buf[index + 1]) - 128.0) * 0.01 * lateral_scale;
     vtheta = (static_cast<double>(buf[index + 2]) - 128.0) * 0.01 * angular_scale;
 
-    ax = ((buf[index + 3] + buf[index + 4] * 256 ) - 10000) * 0.001;
-    ay = ((buf[index + 5] + buf[index + 6] * 256 ) - 10000) * 0.001;
-    az = ((buf[index + 7] + buf[index + 8] * 256 ) - 10000) * 0.001;
+    ax = ((buf[index + 3] + buf[index + 4] * 256 ) - 10000) * 0.001 * STANDARD_GRAVITY;
+    ay = ((buf[index + 5] + buf[index + 6] * 256 ) - 10000) * 0.001 * STANDARD_GRAVITY;
+    az = ((buf[index + 7] + buf[index + 8] * 256 ) - 10000) * 0.001 * STANDARD_GRAVITY;
 
     wx = ((buf[index + 9] + buf[index + 10] * 256 ) - 10000) * 0.1 * DEG_TO_RAD;
     wy = ((buf[index + 11] + buf[index + 12] * 256 ) - 10000) * 0.1 * DEG_TO_RAD;
