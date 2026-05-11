@@ -33,6 +33,7 @@ REQUIRE_IMU="${REQUIRE_IMU:-false}"
 # module has caused RGB-D recording failures on this robot stack.
 ENABLE_IMU="${ENABLE_IMU:-false}"
 ENABLE_REALSENSE_SYNC="${ENABLE_REALSENSE_SYNC:-true}"
+ENABLE_APRILTAG="${ENABLE_APRILTAG:-false}"
 ENABLE_ARUCO="${ENABLE_ARUCO:-false}"
 CAMERA_COLOR_WIDTH="${CAMERA_COLOR_WIDTH:-640}"
 CAMERA_COLOR_HEIGHT="${CAMERA_COLOR_HEIGHT:-480}"
@@ -51,8 +52,20 @@ mkdir -p "${BAG_DIR}"
 # ---------------------------------------------------------------------------
 # Source ROS
 # ---------------------------------------------------------------------------
-source /opt/ros/melodic/setup.bash
-source "${ROOT}/myagv_ros/devel/setup.bash"
+if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
+    source "/opt/ros/${ROS_DISTRO}/setup.bash"
+elif [ -f /opt/ros/noetic/setup.bash ]; then
+    source /opt/ros/noetic/setup.bash
+elif [ -f /opt/ros/melodic/setup.bash ]; then
+    source /opt/ros/melodic/setup.bash
+else
+    echo "ERROR: no supported ROS setup found under /opt/ros" >&2
+    exit 1
+fi
+
+if [ -f "${ROOT}/myagv_ros/devel/setup.bash" ]; then
+    source "${ROOT}/myagv_ros/devel/setup.bash"
+fi
 source "${ROOT}/agv_ws/devel/setup.bash"
 
 # ---------------------------------------------------------------------------
@@ -183,6 +196,7 @@ ground_truth_required: ${REQUIRE_GT}
 imu_required: ${REQUIRE_IMU}
 enable_imu: ${ENABLE_IMU}
 enable_realsense_sync: ${ENABLE_REALSENSE_SYNC}
+enable_apriltag: ${ENABLE_APRILTAG}
 enable_aruco: ${ENABLE_ARUCO}
 camera_profile:
   color_width: ${CAMERA_COLOR_WIDTH}
@@ -209,6 +223,7 @@ echo ""
 START_EPOCH=$(date +%s)
 BRINGUP_PID=""
 ARUCO_PID=""
+APRILTAG_PID=""
 ROSBAG_PID=""
 CLEANED_UP=false
 
@@ -257,6 +272,11 @@ cleanup() {
         kill -INT "${ARUCO_PID}" 2>/dev/null || true
         wait "${ARUCO_PID}" 2>/dev/null || true
     fi
+    if [ -n "${APRILTAG_PID}" ] && kill -0 "${APRILTAG_PID}" 2>/dev/null; then
+        echo "Stopping AprilTag detector..."
+        kill -INT "${APRILTAG_PID}" 2>/dev/null || true
+        wait "${APRILTAG_PID}" 2>/dev/null || true
+    fi
     if [ -n "${BRINGUP_PID}" ] && kill -0 "${BRINGUP_PID}" 2>/dev/null; then
         echo "Stopping bringup..."
         kill -INT "${BRINGUP_PID}" 2>/dev/null || true
@@ -283,6 +303,7 @@ export REQUIRE_GT="$REQUIRE_GT"
 export REQUIRE_IMU="$REQUIRE_IMU"
 export ENABLE_IMU="$ENABLE_IMU"
 export ENABLE_REALSENSE_SYNC="$ENABLE_REALSENSE_SYNC"
+export ENABLE_APRILTAG="$ENABLE_APRILTAG"
 export ENABLE_ARUCO="$ENABLE_ARUCO"
 export CAMERA_COLOR_WIDTH="$CAMERA_COLOR_WIDTH"
 export CAMERA_COLOR_HEIGHT="$CAMERA_COLOR_HEIGHT"
@@ -327,6 +348,16 @@ wait_for_topic_rate /camera/color/image_raw 60
 wait_for_topic_rate /camera/aligned_depth_to_color/image_raw 60
 if [ "$REQUIRE_IMU" = true ]; then
     wait_for_topic_rate /imu 45
+fi
+
+if [ "$ENABLE_APRILTAG" = true ]; then
+    APRILTAG_LOG="${BAG_DIR}/${SESSION_ID}_apriltag.log"
+    echo "Starting AprilTag detector; log: ${APRILTAG_LOG}"
+    roslaunch agv_bringup apriltag.launch \
+        publish_detection_image:=false \
+        > "${APRILTAG_LOG}" 2>&1 &
+    APRILTAG_PID=$!
+    wait_for_topic_rate /tag_detections 45
 fi
 
 if [ "$ENABLE_ARUCO" = true ]; then

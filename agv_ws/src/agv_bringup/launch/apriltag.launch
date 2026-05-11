@@ -3,7 +3,7 @@
   <arg name="image_topic" default="/camera/color/image_raw" />
   <arg name="camera_info_topic" default="/camera/color/camera_info" />
   <arg name="settings_file" default="$(find agv_bringup)/config/settings.yaml" />
-  <arg name="tags_file" default="$(find agv_bringup)/config/tags_tag36h11_id0_80mm.yaml" />
+  <arg name="tags_file" default="$(find agv_bringup)/config/tags.yaml" />
   <arg name="publish_detection_image" default="false" />
 
   <node pkg="apriltag_ros"

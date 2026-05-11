@@ -29,6 +29,7 @@ Run on Mac or robot after recording. Requires: rosbag (ROS), PyYAML, Python 3.
 import subprocess
 import sys
 import os
+import shutil
 import yaml
 import math
 from collections import defaultdict
@@ -104,19 +105,70 @@ def record(level, check, msg):
     print("  [{}] {}: {}".format(symbol, check, msg))
 
 
+def _ros_executable(name):
+    candidates = []
+    found = shutil.which(name)
+    if found:
+        candidates.append(found)
+    ros_distro = os.environ.get("ROS_DISTRO")
+    if ros_distro:
+        candidates.append("/opt/ros/{}/bin/{}".format(ros_distro, name))
+    candidates.extend([
+        "/opt/ros/noetic/bin/{}".format(name),
+        "/opt/ros/melodic/bin/{}".format(name),
+    ])
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return name
+
+
+def _rosbag_python():
+    env = _ros2_env()
+    candidates = []
+    ros_distro = os.environ.get("ROS_DISTRO", "")
+    if ros_distro == "melodic":
+        candidates.extend(["python2", "python"])
+    else:
+        candidates.extend([sys.executable, "python3"])
+    candidates.extend([sys.executable, "python3", "python2", "python"])
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            subprocess.check_call(
+                [candidate, "-c", "import rosbag"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            return candidate
+        except Exception:
+            continue
+    return sys.executable
+
+
 def get_bag_info(bag_path):
     """Run rosbag info --yaml and return parsed dict."""
     try:
         out = subprocess.check_output(
-            ["rosbag", "info", "--yaml", bag_path],
-            stderr=subprocess.STDOUT
+            [_ros_executable("rosbag"), "info", "--yaml", bag_path],
+            stderr=subprocess.STDOUT,
+            env=_ros2_env(),
         )
-        return yaml.safe_load(out.decode("utf-8"))
+        text = out.decode("utf-8")
+        yaml_start = text.find("path:")
+        if yaml_start > 0:
+            text = text[yaml_start:]
+        return yaml.safe_load(text)
     except subprocess.CalledProcessError as e:
         print("ERROR: rosbag info failed: {}".format(e.output.decode("utf-8")))
         sys.exit(1)
     except FileNotFoundError:
-        print("ERROR: rosbag not found. Source your ROS workspace first.")
+        print("ERROR: rosbag not found. Source ROS or install ROS bag tools.")
         sys.exit(1)
 
 
@@ -125,8 +177,9 @@ def check_bag_integrity(bag_path):
     print("\n--- Bag integrity ---")
     try:
         out = subprocess.check_output(
-            ["rosbag", "check", bag_path],
-            stderr=subprocess.STDOUT
+            [_ros_executable("rosbag"), "check", bag_path],
+            stderr=subprocess.STDOUT,
+            env=_ros2_env(),
         )
         output = out.decode("utf-8").strip()
         if "No errors found" in output or output == "":
@@ -245,7 +298,7 @@ def check_tf_tree(bag_path, bag_topics):
 
     try:
         cmd = [
-            "python2", "-c",
+            _rosbag_python(), "-c",
             """
 import rosbag, sys
 b = rosbag.Bag(sys.argv[1])
@@ -289,23 +342,63 @@ print('\\n'.join(sorted(pairs)))
 
     except Exception:
         record(WARN, "tf_tree",
-               "Could not inspect TF messages — run with python2 rosbag for precise check")
+               "Could not inspect TF messages — run with a working rosbag Python API for precise check")
 
 
 def _ros2_env():
-    """Return an env dict with ROS Melodic python2 paths set for subprocess calls."""
+    """Return an env dict with the active ROS Python paths set for subprocess calls."""
     env = os.environ.copy()
-    ros_python_path = "/opt/ros/melodic/lib/python2.7/dist-packages"
-    existing = env.get("PYTHONPATH", "")
-    if ros_python_path not in existing:
-        env["PYTHONPATH"] = ros_python_path + (":" + existing if existing else "")
+    candidates = []
+    lib_candidates = []
+    bin_candidates = []
+    ros_distro = env.get("ROS_DISTRO")
+    if ros_distro:
+        candidates.extend([
+            "/opt/ros/{}/lib/python3/dist-packages".format(ros_distro),
+            "/opt/ros/{}/lib/python2.7/dist-packages".format(ros_distro),
+        ])
+        lib_candidates.append("/opt/ros/{}/lib".format(ros_distro))
+        bin_candidates.append("/opt/ros/{}/bin".format(ros_distro))
+    candidates.extend([
+        "/opt/ros/noetic/lib/python3/dist-packages",
+        "/opt/ros/melodic/lib/python2.7/dist-packages",
+    ])
+    lib_candidates.extend([
+        "/opt/ros/noetic/lib",
+        "/opt/ros/melodic/lib",
+    ])
+    bin_candidates.extend([
+        "/opt/ros/noetic/bin",
+        "/opt/ros/melodic/bin",
+    ])
+
+    existing_parts = [part for part in env.get("PYTHONPATH", "").split(":") if part]
+    for ros_python_path in reversed(candidates):
+        if os.path.isdir(ros_python_path) and ros_python_path not in existing_parts:
+            existing_parts.insert(0, ros_python_path)
+    if existing_parts:
+        env["PYTHONPATH"] = ":".join(existing_parts)
+
+    existing_libs = [part for part in env.get("LD_LIBRARY_PATH", "").split(":") if part]
+    for ros_lib_path in reversed(lib_candidates):
+        if os.path.isdir(ros_lib_path) and ros_lib_path not in existing_libs:
+            existing_libs.insert(0, ros_lib_path)
+    if existing_libs:
+        env["LD_LIBRARY_PATH"] = ":".join(existing_libs)
+
+    existing_bins = [part for part in env.get("PATH", "").split(":") if part]
+    for ros_bin_path in reversed(bin_candidates):
+        if os.path.isdir(ros_bin_path) and ros_bin_path not in existing_bins:
+            existing_bins.insert(0, ros_bin_path)
+    if existing_bins:
+        env["PATH"] = ":".join(existing_bins)
     return env
 
 
 def check_frame_drops(bag_path, bag_topics, duration):
     """
     Check for frame drops by analysing timestamp gaps on camera topics.
-    Reads message timestamps via python2 rosbag API (ROS Melodic is py2-only).
+    Reads message timestamps via the rosbag Python API.
     Falls back to gap estimation from message count if detailed check fails.
     """
     print("\n--- Frame drop check (USB 2 bandwidth) ---")
@@ -328,10 +421,10 @@ def check_frame_drops(bag_path, bag_topics, duration):
         expected_period = 1.0 / target_hz if target_hz > 0 else 1.0
         max_gap = MAX_GAP_MULTIPLIER * expected_period
 
-        # Use python2 rosbag API to extract per-message timestamps
+        # Use rosbag Python API to extract per-message timestamps
         try:
             cmd = [
-                "python2", "-c",
+                _rosbag_python(), "-c",
                 "import rosbag, sys; b=rosbag.Bag(sys.argv[1]); "
                 "[sys.stdout.write(str(m.header.stamp.to_sec())+'\\n') "
                 "if hasattr(m,'header') else sys.stdout.write(str(t.to_sec())+'\\n') "
@@ -382,10 +475,10 @@ def check_frame_drops(bag_path, bag_topics, duration):
 
             if drop_pct < 1.0:
                 record(PASS, topic + " gaps",
-                       "~{:.1f}% estimated drop rate (count-based; python2/rosbag unavailable for gap analysis)".format(drop_pct))
+                       "~{:.1f}% estimated drop rate (count-based; rosbag Python API unavailable for gap analysis)".format(drop_pct))
             else:
                 record(WARN, topic + " gaps",
-                       "~{:.1f}% estimated drop rate (count-based; python2/rosbag unavailable for gap analysis)".format(drop_pct))
+                       "~{:.1f}% estimated drop rate (count-based; rosbag Python API unavailable for gap analysis)".format(drop_pct))
 
 
 def check_colour_depth_sync(bag_path, bag_topics):
@@ -403,7 +496,7 @@ def check_colour_depth_sync(bag_path, bag_topics):
 
     try:
         cmd = [
-            "python2", "-c",
+            _rosbag_python(), "-c",
             """
 import rosbag, sys, bisect
 b = rosbag.Bag(sys.argv[1])
@@ -462,7 +555,7 @@ if diffs:
                        "NOT publishable for RGB-D SLAM.".format(mean_ms, max_ms, pct_over_33ms))
     except Exception:
         record(WARN, "colour_depth_sync",
-               "Could not compute sync — run with python2 rosbag for precise check")
+               "Could not compute sync — run with a working rosbag Python API for precise check")
 
 
 def check_imu_monotonic(bag_path, bag_topics):
@@ -480,7 +573,7 @@ def check_imu_monotonic(bag_path, bag_topics):
 
     try:
         cmd = [
-            "python2", "-c",
+            _rosbag_python(), "-c",
             "import rosbag, sys; b=rosbag.Bag(sys.argv[1]); "
             "prev=0; bad=0; n=0; "
             "[exec('global prev,bad,n; t=m.header.stamp.to_sec(); bad+=1 if t<=prev else 0; prev=t; n+=1') "
@@ -501,7 +594,7 @@ def check_imu_monotonic(bag_path, bag_topics):
                        "{} non-monotonic {} timestamps out of {} — IMU driver issue".format(
                            bad, imu_topic, total))
     except Exception:
-        record(WARN, "imu_monotonic", "Could not check — run with python2 rosbag for precise check")
+        record(WARN, "imu_monotonic", "Could not check — run with a working rosbag Python API for precise check")
 
 
 def print_summary(bag_path, duration, bag_topics, strict):

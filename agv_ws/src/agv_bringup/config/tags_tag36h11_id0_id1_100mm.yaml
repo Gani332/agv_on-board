@@ -1,0 +1,8 @@
+# Project AprilTags: tag36h11 IDs 0 and 1, 100 mm code side length.
+standalone_tags:
+  - id: 0
+    size: 0.10
+    name: "tag_0"
+  - id: 1
+    size: 0.10
+    name: "tag_1"

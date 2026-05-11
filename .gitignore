@@ -16,8 +16,15 @@ __pycache__/
 *.pgm
 /agv_data/
 /dataset/
+/offline_swarmslam/downloaded_bags/
+/offline_swarmslam/offline_slam_data/
+/offline_swarmslam/models/
+/offline_swarmslam/results/
 *_manifest.yaml
 *_chrony.txt
+
+# External source checkouts
+/external/
 
 # Local diagnostic output
 /diagnostics/

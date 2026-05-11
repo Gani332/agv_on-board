@@ -19,6 +19,7 @@
   <arg name="depth_width" default="$(optenv CAMERA_DEPTH_WIDTH 640)" />
   <arg name="depth_height" default="$(optenv CAMERA_DEPTH_HEIGHT 480)" />
   <arg name="depth_fps" default="$(optenv CAMERA_DEPTH_FPS 15)" />
+  <arg name="enable_apriltag" default="$(optenv ENABLE_APRILTAG false)" />
   <arg name="enable_aruco" default="$(optenv ENABLE_ARUCO false)" />
   <arg name="aruco_dictionary" default="$(optenv ARUCO_DICTIONARY original)" />
   <arg name="aruco_marker_size" default="$(optenv ARUCO_MARKER_SIZE 0.15)" />
@@ -33,6 +34,10 @@
     <arg name="depth_width" value="$(arg depth_width)" />
     <arg name="depth_height" value="$(arg depth_height)" />
     <arg name="depth_fps" value="$(arg depth_fps)" />
+  </include>
+
+  <include if="$(arg enable_apriltag)" file="$(find agv_bringup)/launch/apriltag.launch">
+    <arg name="publish_detection_image" value="false" />
   </include>
 
   <include if="$(arg enable_aruco)" file="$(find agv_bringup)/launch/aruco.launch">

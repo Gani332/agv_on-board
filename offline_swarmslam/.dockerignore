@@ -1,0 +1,8 @@
+.git
+downloaded_bags
+external
+offline_slam_data
+models
+results
+**/__pycache__
+**/*.pyc

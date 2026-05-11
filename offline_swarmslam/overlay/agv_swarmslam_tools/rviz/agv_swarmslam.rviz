@@ -1,0 +1,197 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: map
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Swarm-SLAM Pose Graph
+      Topic:
+        Value: /agv_swarmslam/pose_graph_markers
+    - Class: rviz_default_plugins/Path
+      Color: 26; 115; 255
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.12
+      Name: Robot 0 Swarm-SLAM Path
+      Topic:
+        Value: /agv_swarmslam/robot_0/path
+    - Class: rviz_default_plugins/Path
+      Color: 255; 140; 26
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.12
+      Name: Robot 1 Swarm-SLAM Path
+      Topic:
+        Value: /agv_swarmslam/robot_1/path
+    - Class: rviz_default_plugins/Path
+      Color: 64; 204; 89
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.12
+      Name: Robot 2 Swarm-SLAM Path
+      Topic:
+        Value: /agv_swarmslam/robot_2/path
+    - Class: rviz_default_plugins/Path
+      Color: 204; 64; 230
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.12
+      Name: Robot 3 Swarm-SLAM Path
+      Topic:
+        Value: /agv_swarmslam/robot_3/path
+    - Class: rviz_default_plugins/Path
+      Color: 242; 51; 64
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.12
+      Name: Robot 4 Swarm-SLAM Path
+      Topic:
+        Value: /agv_swarmslam/robot_4/path
+    - Class: rviz_default_plugins/Path
+      Color: 92; 184; 255
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.04
+      Name: Robot 0 Raw Odom Path
+      Topic:
+        Value: /agv_swarmslam/robot_0/odom_path
+    - Class: rviz_default_plugins/Path
+      Color: 255; 196; 92
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.04
+      Name: Robot 1 Raw Odom Path
+      Topic:
+        Value: /agv_swarmslam/robot_1/odom_path
+    - Class: rviz_default_plugins/Path
+      Color: 135; 235; 150
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.04
+      Name: Robot 2 Raw Odom Path
+      Topic:
+        Value: /agv_swarmslam/robot_2/odom_path
+    - Class: rviz_default_plugins/Path
+      Color: 230; 135; 245
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.04
+      Name: Robot 3 Raw Odom Path
+      Topic:
+        Value: /agv_swarmslam/robot_3/odom_path
+    - Class: rviz_default_plugins/Path
+      Color: 255; 125; 135
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.04
+      Name: Robot 4 Raw Odom Path
+      Topic:
+        Value: /agv_swarmslam/robot_4/odom_path
+    - Class: rviz_default_plugins/PointCloud2
+      Alpha: 0.45
+      Enabled: true
+      Name: Latest Keyframe Cloud
+      Topic:
+        Value: /agv_swarmslam/keyframe_pointcloud
+      Size (m): 0.008
+      Style: Points
+    - Class: rviz_default_plugins/PointCloud2
+      Alpha: 0.55
+      Enabled: true
+      Name: Robot 0 Aligned Keyframe Map
+      Topic:
+        Value: /agv_swarmslam/robot_0/keyframe_cloud
+      Size (m): 0.01
+      Style: Points
+    - Class: rviz_default_plugins/PointCloud2
+      Alpha: 0.55
+      Enabled: true
+      Name: Robot 1 Keyframe Map
+      Topic:
+        Value: /agv_swarmslam/robot_1/keyframe_cloud
+      Size (m): 0.01
+      Style: Points
+    - Class: rviz_default_plugins/PointCloud2
+      Alpha: 0.55
+      Enabled: true
+      Name: Robot 2 Keyframe Map
+      Topic:
+        Value: /agv_swarmslam/robot_2/keyframe_cloud
+      Size (m): 0.01
+      Style: Points
+    - Class: rviz_default_plugins/PointCloud2
+      Alpha: 0.55
+      Enabled: true
+      Name: Robot 3 Keyframe Map
+      Topic:
+        Value: /agv_swarmslam/robot_3/keyframe_cloud
+      Size (m): 0.01
+      Style: Points
+    - Class: rviz_default_plugins/PointCloud2
+      Alpha: 0.55
+      Enabled: true
+      Name: Robot 4 Keyframe Map
+      Topic:
+        Value: /agv_swarmslam/robot_4/keyframe_cloud
+      Size (m): 0.01
+      Style: Points
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Name: Robot 0 RGB Camera
+      Topic:
+        Value: /agv_swarmslam/robot_0/color_display
+      Transport Hint: raw
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Name: Robot 1 RGB Camera
+      Topic:
+        Value: /agv_swarmslam/robot_1/color_display
+      Transport Hint: raw
+    - Class: rviz_default_plugins/Image
+      Enabled: false
+      Name: Robot 2 RGB Camera
+      Topic:
+        Value: /agv_swarmslam/robot_2/color_display
+      Transport Hint: raw
+    - Class: rviz_default_plugins/Image
+      Enabled: false
+      Name: Robot 3 RGB Camera
+      Topic:
+        Value: /agv_swarmslam/robot_3/color_display
+      Transport Hint: raw
+    - Class: rviz_default_plugins/Image
+      Enabled: false
+      Name: Robot 4 RGB Camera
+      Topic:
+        Value: /agv_swarmslam/robot_4/color_display
+      Transport Hint: raw
+  Enabled: true
+  Global Options:
+    Background Color: 30; 30; 30
+    Fixed Frame: map
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 6.0
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Pitch: 1.15
+      Target Frame: map
+      Yaw: 0.78

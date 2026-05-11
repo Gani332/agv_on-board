@@ -100,6 +100,17 @@ source ~/slam_project/agv_ws/devel/setup.bash
 python scripts/logging/drive_square.py --side 0.75 --linear 0.22 --angular 0.28 --cycles 1
 ```
 
+Or run a concentric-circle S1 motion test:
+
+```bash
+ssh ubuntu@<robot-ip>
+cd ~/slam_project
+source /opt/ros/melodic/setup.bash
+source ~/slam_project/myagv_ros/devel/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+python scripts/logging/drive_circle.py --radius 1.00 --linear 0.16 --duration 60 --no-prompt --verbose
+```
+
 Stop recording with `Ctrl+C`. Bags and manifests are written to `~/agv_data`.
 
 ## Next Lab Visit Commands
@@ -173,6 +184,7 @@ scripts/logging/validate_bag.py            Full post-run publishability check
 scripts/logging/audit_bag_fast.py          Fast topic/rate/gap/sync audit
 scripts/logging/drive_straight.py          Odom-bounded straight-line dataset helper
 scripts/logging/drive_square.py            Odom-bounded square motion helper
+scripts/logging/drive_circle.py            Odom-feedback circular motion helper for S1
 scripts/logging/drive_forward_back.py      Odom-bounded smoke-test motion helper
 agv_ws/src/agv_bringup/launch/bringup.launch
 agv_ws/src/agv_bringup/launch/logging.launch
@@ -203,6 +215,7 @@ agv_on-board/
 │   ├── calibration/            Calibration extraction and static tests
 │   ├── diagnostics/            Hardware debug scripts
 │   └── logging/                Recording, validation, motion helpers
+├── offline_swarmslam/          Standalone offline Swarm-SLAM workspace
 ├── docs/                       SOPs and dataset checklists
 ├── drivers/                    Vendored third-party SDK/reference code
 └── configs/                    RViz configs
@@ -238,7 +251,7 @@ Camera-only ArUco smoke test:
 roslaunch agv_bringup aruco_test.launch target_id:=503 marker_size:=0.15 publish_image:=false
 ```
 
-AprilTag detector only, for the project `tag36h11` ID 0 marker with 80 mm code size:
+AprilTag detector only, for the project `tag36h11` markers with 100 mm code size. For robust live multi-robot work, give each robot a unique tag ID; the current pass1 offline bags have duplicate ID 1 tags and handle ownership with an offline two-robot rule:
 
 ```bash
 roslaunch agv_bringup apriltag.launch
@@ -255,6 +268,15 @@ Production recording:
 ```bash
 bash scripts/logging/start_session.sh <robot_name> <scenario_name>
 ```
+
+S1 concentric-circle command pattern:
+
+```bash
+python scripts/logging/drive_circle.py --radius <0.50|0.75|1.00|1.25|1.50> --linear 0.16 --duration 600 --start-delay <0|30|60|90|120> --no-prompt --verbose
+```
+
+Place each robot on its ring and point it tangentially before starting. The
+default direction is clockwise.
 
 Normal scenario recording keeps live marker detection off so the robot
 prioritises stable RGB-D, LiDAR, odom, TF, and base `/imu` logging. If a run
@@ -447,3 +469,7 @@ For each robot:
 5. Record with `bash scripts/logging/start_session.sh <robot_name> <scenario>`.
 6. Keep robot bags and any separate PhaseSpace logs named with the same robot/scenario/timestamp convention.
 7. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.
+
+Offline Swarm-SLAM analysis lives in `offline_swarmslam/` and can be moved out
+of this robot-side repo. Its runner can launch converted bags for robot IDs
+`0..N-1`; use unique AprilTag IDs for multi-robot runs.
