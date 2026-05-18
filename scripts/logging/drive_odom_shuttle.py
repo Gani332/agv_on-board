@@ -157,19 +157,36 @@ def command_for_error(along_error, cross_error, yaw_error, lane_yaw, yaw, args):
     if abs(along_error) > args.min_speed_distance and abs(along_cmd) < args.min_speed:
         along_cmd = sign_or_zero(along_error) * args.min_speed
 
-    cross_cmd = clamp(-args.cross_track_kp * cross_error,
-                      -args.max_lateral, args.max_lateral)
+    direction = sign_or_zero(along_error)
+    if direction == 0.0:
+        direction = 1.0
 
-    body_x, body_y = lane_velocity_to_body(along_cmd, cross_cmd, lane_yaw, yaw)
-    body_x, body_y = scale_xy(body_x, body_y, args.max_xy_command)
+    cross_heading = -direction * clamp(
+        args.cross_heading_kp * cross_error,
+        -args.max_cross_heading_offset,
+        args.max_cross_heading_offset,
+    )
+    target_yaw_error = angle_delta(lane_yaw + cross_heading, yaw)
 
-    if abs(yaw_error) > args.heading_gate:
+    if args.use_lateral and abs(along_error) > args.lateral_stop_distance:
+        if abs(cross_error) <= args.lateral_deadband:
+            cross_cmd = 0.0
+        else:
+            cross_cmd = clamp(-args.cross_track_kp * cross_error,
+                              -args.max_lateral, args.max_lateral)
+        body_x, body_y = lane_velocity_to_body(along_cmd, cross_cmd, lane_yaw, yaw)
+        body_x, body_y = scale_xy(body_x, body_y, args.max_xy_command)
+    else:
+        body_x = along_cmd
+        body_y = 0.0
+
+    if abs(target_yaw_error) > args.heading_gate:
         body_x = 0.0
         body_y = 0.0
 
-    angular = clamp(args.heading_kp * yaw_error,
+    angular = clamp(args.heading_kp * target_yaw_error,
                     -args.max_angular, args.max_angular)
-    return body_x, body_y, angular
+    return body_x, body_y, angular, target_yaw_error
 
 
 def odom_is_stale(args):
@@ -245,17 +262,17 @@ def drive_to_target(pub, args, origin, lane_yaw, target_along, leg_index):
             abort_reason = "no odom progress for %.1fs" % args.stuck_timeout
             break
 
-        body_x, body_y, angular = command_for_error(
+        body_x, body_y, angular, target_yaw_error = command_for_error(
             along_error, cross, yaw_error, lane_yaw, yaw, args)
         msg.linear.x = body_x
-        msg.linear.y = body_y if args.use_lateral else 0.0
+        msg.linear.y = body_y
         msg.angular.z = angular
         pub.publish(msg)
 
         if args.verbose and now - last_report >= args.report_period:
             print(
                 "leg=%d target=%.3f along=%.3f err=%.3f cross=%.3f "
-                "yaw=%.1fdeg cmd=(%.3f, %.3f, %.3f)" %
+                "yaw=%.1fdeg target_yaw=%.1fdeg cmd=(%.3f, %.3f, %.3f)" %
                 (
                     leg_index,
                     target_along,
@@ -263,6 +280,7 @@ def drive_to_target(pub, args, origin, lane_yaw, target_along, leg_index):
                     along_error,
                     cross,
                     math.degrees(yaw_error),
+                    math.degrees(target_yaw_error),
                     msg.linear.x,
                     msg.linear.y,
                     msg.angular.z,
@@ -296,21 +314,23 @@ def parse_args(argv):
                         help="Maximum normalized along-track command")
     parser.add_argument("--min-speed", type=float, default=0.025,
                         help="Minimum normalized along-track command far from endpoints")
-    parser.add_argument("--max-lateral", type=float, default=0.06,
-                        help="Maximum normalized lateral correction command")
+    parser.add_argument("--max-lateral", type=float, default=0.03,
+                        help="Maximum normalized lateral correction command when --enable-lateral is used")
     parser.add_argument("--max-xy-command", type=float, default=0.10,
                         help="Maximum combined normalized x/y command")
     parser.add_argument("--along-kp", type=float, default=0.55,
                         help="P gain from along-track error to along command")
-    parser.add_argument("--cross-track-kp", type=float, default=0.75,
-                        help="P gain from lateral error to lateral command")
+    parser.add_argument("--cross-track-kp", type=float, default=0.25,
+                        help="P gain from lateral error to lateral command when --enable-lateral is used")
+    parser.add_argument("--cross-heading-kp", type=float, default=0.80,
+                        help="P gain from lateral error to yaw-heading bias")
     parser.add_argument("--heading-kp", type=float, default=0.75,
                         help="P gain from yaw error to angular command")
     parser.add_argument("--max-angular", type=float, default=0.16,
                         help="Maximum normalized angular command")
     parser.add_argument("--distance-tolerance", type=float, default=0.04,
                         help="Along-track endpoint tolerance, metres")
-    parser.add_argument("--cross-track-tolerance", type=float, default=0.05,
+    parser.add_argument("--cross-track-tolerance", type=float, default=0.12,
                         help="Lateral endpoint tolerance, metres")
     parser.add_argument("--max-cross-track", type=float, default=0.18,
                         help="Abort if lateral error exceeds this, metres")
@@ -320,6 +340,8 @@ def parse_args(argv):
                         help="Stop translating while yaw error exceeds this")
     parser.add_argument("--max-heading-error-deg", type=float, default=40.0,
                         help="Abort if yaw error exceeds this")
+    parser.add_argument("--max-cross-heading-offset-deg", type=float, default=8.0,
+                        help="Maximum yaw bias used to steer back toward the lane")
     parser.add_argument("--min-speed-distance", type=float, default=0.12,
                         help="Only enforce min speed farther than this from endpoint")
     parser.add_argument("--settle-time", type=float, default=0.35,
@@ -332,6 +354,10 @@ def parse_args(argv):
                         help="Minimum improvement counted as odom progress, metres")
     parser.add_argument("--odom-timeout", type=float, default=0.5,
                         help="Abort if /odom callback is stale for this long")
+    parser.add_argument("--lateral-deadband", type=float, default=0.04,
+                        help="Ignore lateral correction below this cross-track error")
+    parser.add_argument("--lateral-stop-distance", type=float, default=0.35,
+                        help="Disable lateral motion within this along-track distance of an endpoint")
     parser.add_argument("--pause", type=float, default=1.0,
                         help="Pause between legs, seconds")
     parser.add_argument("--rate", type=float, default=20.0,
@@ -342,8 +368,10 @@ def parse_args(argv):
                         help="Unix epoch base time; start-delay is added")
     parser.add_argument("--max-start-late", type=float, default=3.0,
                         help="Abort if scheduled start is missed by this much")
+    parser.add_argument("--enable-lateral", action="store_true",
+                        help="Use cmd_vel.linear.y for gentle lateral correction")
     parser.add_argument("--disable-lateral", action="store_true",
-                        help="Do not use cmd_vel.linear.y lateral correction")
+                        help="Deprecated: lateral correction is disabled unless --enable-lateral is set")
     parser.add_argument("--no-prompt", action="store_true",
                         help="Start without pressing Enter")
     parser.add_argument("--verbose", action="store_true",
@@ -361,6 +389,7 @@ def normalise_args(args):
     args.max_xy_command = clamp(abs(args.max_xy_command), 0.01, 1.0)
     args.along_kp = max(0.0, args.along_kp)
     args.cross_track_kp = max(0.0, args.cross_track_kp)
+    args.cross_heading_kp = max(0.0, args.cross_heading_kp)
     args.heading_kp = max(0.0, args.heading_kp)
     args.max_angular = clamp(abs(args.max_angular), 0.0, 1.0)
     args.distance_tolerance = max(0.0, args.distance_tolerance)
@@ -369,19 +398,22 @@ def normalise_args(args):
     args.heading_tolerance = math.radians(max(0.0, args.heading_tolerance_deg))
     args.heading_gate = math.radians(max(args.heading_tolerance_deg, args.heading_gate_deg))
     args.max_heading_error = math.radians(max(args.heading_gate_deg, args.max_heading_error_deg))
+    args.max_cross_heading_offset = math.radians(max(0.0, args.max_cross_heading_offset_deg))
     args.min_speed_distance = max(args.distance_tolerance, args.min_speed_distance)
     args.settle_time = max(0.0, args.settle_time)
     args.timeout = max(0.1, args.timeout)
     args.stuck_timeout = max(0.1, args.stuck_timeout)
     args.progress_epsilon = max(0.0, args.progress_epsilon)
     args.odom_timeout = max(0.05, args.odom_timeout)
+    args.lateral_deadband = max(0.0, args.lateral_deadband)
+    args.lateral_stop_distance = max(args.distance_tolerance, args.lateral_stop_distance)
     args.pause = max(0.0, args.pause)
     args.rate = max(5.0, args.rate)
     args.start_delay = max(0.0, args.start_delay)
     args.start_at_epoch = max(0.0, args.start_at_epoch)
     args.max_start_late = max(0.0, args.max_start_late)
     args.report_period = max(0.5, args.report_period)
-    args.use_lateral = not args.disable_lateral
+    args.use_lateral = args.enable_lateral and not args.disable_lateral
     return args
 
 
