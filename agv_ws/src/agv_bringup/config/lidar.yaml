@@ -26,8 +26,10 @@ frame_id: "laser_frame"
 
 # Extrinsic: laser_frame relative to base_footprint
 # UPDATE after physical measurement (Stage 1b)
-# Current value in myagv_ros/src/ydlidar_ros_driver/launch/X2.launch:
-# z=0.10m, yaw=0.0 (measured 2026-03-15)
+# Current local ydlidar_ros_driver/launch/X2.launch publishes z=0.20m.
+# The measured/reference value below remains z=0.10m (2026-03-15), so the
+# LiDAR TF height should be treated as a known caveat until reconciled in the
+# active driver launch.
 # Run: rosrun tf view_frames to verify full TF chain
 extrinsic:
   x: 0.0

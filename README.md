@@ -212,13 +212,37 @@ agv_on-board/
 │       └── realsense-ros/      Vendored RealSense ROS wrapper
 ├── scripts/
 │   ├── setup_robot.sh          Build/check robot after clone or pull
+│   ├── benchmarking/           Trajectory evaluation, alignment, report assets
 │   ├── calibration/            Calibration extraction and static tests
 │   ├── diagnostics/            Hardware debug scripts
-│   └── logging/                Recording, validation, motion helpers
-├── offline_swarmslam/          Standalone offline Swarm-SLAM workspace
+│   ├── logging/                Recording, validation, motion helpers
+│   ├── scenarios/              Multi-robot scenario launch helpers
+│   ├── orbslam3/               ORB-SLAM3 benchmark wrappers
+│   ├── rtabmap/                RTAB-Map benchmark wrappers
+│   ├── slam_toolbox/           SLAM Toolbox benchmark wrappers
+│   ├── cartographer/           Cartographer benchmark wrappers
+│   ├── swarmslam/              Swarm-SLAM benchmark wrappers
+│   └── covins/                 COVINS-G benchmark wrappers
+├── Report/                     Report source, references, curated figures
 ├── docs/                       SOPs and dataset checklists
 ├── drivers/                    Vendored third-party SDK/reference code
 └── configs/                    RViz configs
+```
+
+External algorithm checkouts, raw bags, public datasets, and generated benchmark
+outputs are local workspace artefacts and are intentionally ignored by git. See
+`docs/BENCHMARKING_PUSH_GUIDE.md` before staging benchmark code.
+
+Preview a clean benchmark/report staging set:
+
+```bash
+bash scripts/benchmarking/stage_benchmark_code.sh
+```
+
+Stage only the intended source/documentation paths:
+
+```bash
+bash scripts/benchmarking/stage_benchmark_code.sh --stage
 ```
 
 ## Robot Runtime
@@ -470,6 +494,6 @@ For each robot:
 6. Keep robot bags and any separate PhaseSpace logs named with the same robot/scenario/timestamp convention.
 7. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.
 
-Offline Swarm-SLAM analysis lives in `offline_swarmslam/` and can be moved out
-of this robot-side repo. Its runner can launch converted bags for robot IDs
-`0..N-1`; use unique AprilTag IDs for multi-robot runs.
+Offline Swarm-SLAM analysis wrappers live in `scripts/swarmslam/`. The upstream
+Swarm-SLAM checkout and generated results should remain outside git in the
+ignored local workspace directories.

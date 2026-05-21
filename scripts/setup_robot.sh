@@ -13,7 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INSTALL_SYSTEM=true
-REQUIRED_LIBREALSENSE_VERSION="${REQUIRED_LIBREALSENSE_VERSION:-2.57.6}"
+SUPPORTED_LIBREALSENSE_VERSIONS="${SUPPORTED_LIBREALSENSE_VERSIONS:-2.57.6 2.57.7}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -49,13 +49,13 @@ check_realsense_version() {
         local version
         version="$(pkg-config --modversion realsense2)"
         echo "pkg-config realsense2: ${version}"
-        if [ "${version}" != "${REQUIRED_LIBREALSENSE_VERSION}" ]; then
-            echo "WARN: validated RealSense SDK is ${REQUIRED_LIBREALSENSE_VERSION}, found ${version}."
-            echo "      Install librealsense2 ${REQUIRED_LIBREALSENSE_VERSION} runtime/dev headers and rebuild agv_ws before scenario runs."
+        if [[ " ${SUPPORTED_LIBREALSENSE_VERSIONS} " != *" ${version} "* ]]; then
+            echo "WARN: validated RealSense SDK versions are ${SUPPORTED_LIBREALSENSE_VERSIONS}, found ${version}."
+            echo "      Install a validated librealsense2 runtime/dev package and rebuild agv_ws before scenario runs."
         fi
     else
         echo "WARN: realsense2 pkg-config metadata not found."
-        echo "      Install librealsense2 ${REQUIRED_LIBREALSENSE_VERSION} runtime/dev headers before scenario runs."
+        echo "      Install a validated librealsense2 runtime/dev package before scenario runs."
     fi
 }
 
@@ -74,6 +74,22 @@ echo "root: ${ROOT}"
 ensure_catkin_workspace "${ROOT}/myagv_ros"
 ensure_catkin_workspace "${ROOT}/agv_ws"
 
+if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
+    ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
+elif [ -f /opt/ros/noetic/setup.bash ]; then
+    ROS_DISTRO="noetic"
+    ROS_SETUP="/opt/ros/noetic/setup.bash"
+elif [ -f /opt/ros/melodic/setup.bash ]; then
+    ROS_DISTRO="melodic"
+    ROS_SETUP="/opt/ros/melodic/setup.bash"
+else
+    echo "ERROR: neither ROS Noetic nor ROS Melodic setup.bash was found." >&2
+    exit 1
+fi
+
+ROS_PKG_PREFIX="ros-${ROS_DISTRO}"
+echo "ros: ${ROS_DISTRO} (${ROS_SETUP})"
+
 if [ "$INSTALL_SYSTEM" = true ]; then
     section "system dependencies"
     sudo apt-get update
@@ -83,31 +99,31 @@ if [ "$INSTALL_SYSTEM" = true ]; then
         cmake \
         git \
         pkg-config \
-        python-opencv \
+        python3-opencv \
         python3-pip \
         python3-yaml \
-        ros-melodic-apriltag-ros \
-        ros-melodic-cv-bridge \
-        ros-melodic-ddynamic-reconfigure \
-        ros-melodic-diagnostic-msgs \
-        ros-melodic-geometry-msgs \
-        ros-melodic-image-transport-plugins \
-        ros-melodic-nav-msgs \
-        ros-melodic-rosbag \
-        ros-melodic-sensor-msgs \
-        ros-melodic-std-msgs \
-        ros-melodic-tf \
-        ros-melodic-tf2-msgs
+        "${ROS_PKG_PREFIX}-apriltag-ros" \
+        "${ROS_PKG_PREFIX}-cv-bridge" \
+        "${ROS_PKG_PREFIX}-ddynamic-reconfigure" \
+        "${ROS_PKG_PREFIX}-diagnostic-msgs" \
+        "${ROS_PKG_PREFIX}-geometry-msgs" \
+        "${ROS_PKG_PREFIX}-image-transport-plugins" \
+        "${ROS_PKG_PREFIX}-nav-msgs" \
+        "${ROS_PKG_PREFIX}-rosbag" \
+        "${ROS_PKG_PREFIX}-sensor-msgs" \
+        "${ROS_PKG_PREFIX}-std-msgs" \
+        "${ROS_PKG_PREFIX}-tf" \
+        "${ROS_PKG_PREFIX}-tf2-msgs"
 
     if apt-cache show librealsense2-dev >/dev/null 2>&1; then
         sudo apt-get install -y librealsense2-dev librealsense2-utils
-    elif apt-cache show ros-melodic-librealsense2 >/dev/null 2>&1; then
+    elif apt-cache show "${ROS_PKG_PREFIX}-librealsense2" >/dev/null 2>&1; then
         sudo apt-get install -y \
-            ros-melodic-librealsense2 \
-            ros-melodic-realsense2-camera \
-            ros-melodic-realsense2-description
-        echo "WARN: installed ROS Melodic librealsense packages because Intel packages were not available."
-        echo "      This may provide an older SDK than the validated ${REQUIRED_LIBREALSENSE_VERSION} stack."
+            "${ROS_PKG_PREFIX}-librealsense2" \
+            "${ROS_PKG_PREFIX}-realsense2-camera" \
+            "${ROS_PKG_PREFIX}-realsense2-description"
+        echo "WARN: installed ROS ${ROS_DISTRO} librealsense packages because Intel packages were not available."
+        echo "      This may provide an older SDK than the validated stack: ${SUPPORTED_LIBREALSENSE_VERSIONS}."
     else
         echo "WARN: librealsense2 packages not available from configured apt sources."
         echo "      Install Intel RealSense packages separately if this robot is fresh."
@@ -116,7 +132,7 @@ if [ "$INSTALL_SYSTEM" = true ]; then
     sudo systemctl enable --now chrony 2>/dev/null || sudo service chrony restart || true
 fi
 
-require_file "/opt/ros/melodic/setup.bash"
+require_file "${ROS_SETUP}"
 
 if ! command -v chronyc >/dev/null 2>&1; then
     echo "ERROR: chronyc not found; install chrony or rerun without --skip-system." >&2
@@ -141,18 +157,18 @@ if [ "${USE_SYSTEM_REALSENSE:-false}" = true ]; then
 fi
 
 section "build myagv_ros"
-source /opt/ros/melodic/setup.bash
+source "${ROS_SETUP}"
 cd "${ROOT}/myagv_ros"
 catkin_make
 
 section "build agv_ws"
-source /opt/ros/melodic/setup.bash
+source "${ROS_SETUP}"
 source "${ROOT}/myagv_ros/devel/setup.bash"
 cd "${ROOT}/agv_ws"
 catkin_make
 
 section "workspace check"
-source /opt/ros/melodic/setup.bash
+source "${ROS_SETUP}"
 source "${ROOT}/myagv_ros/devel/setup.bash"
 source "${ROOT}/agv_ws/devel/setup.bash"
 rospack find agv_bringup
@@ -174,7 +190,7 @@ chmod +x \
 
 section "next commands"
 cat <<EOF
-source /opt/ros/melodic/setup.bash
+source ${ROS_SETUP}
 source ${ROOT}/myagv_ros/devel/setup.bash
 source ${ROOT}/agv_ws/devel/setup.bash
 

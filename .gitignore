@@ -1,33 +1,80 @@
-# ROS Build Artifacts
+# ---------------------------------------------------------------------------
+# ROS / build artefacts
+# ---------------------------------------------------------------------------
 build/
 devel/
 install/
+log/
 logs/
-*.pyc
+.catkin_workspace
+**/.catkin_workspace
+**/build/
+**/devel/
+**/install/
+**/log/
+
+# Python / native caches
 __pycache__/
+**/__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.o
+*.a
+.cache/
+**/.cache/
 
-# IDEs
-.vscode/
-.idea/
+# Local compiled helpers
+/scripts/orbslam3/bin/
 
-# Dataset files
+# ---------------------------------------------------------------------------
+# Raw robot data, public datasets, generated maps, and benchmark outputs
+# ---------------------------------------------------------------------------
 *.bag
 *.bag.active
+*.mcap
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pcd
+*.ply
 *.pgm
+*.bt
+*.zip
+
 /agv_data/
 /dataset/
+/downloaded_bags/
+/external_datasets/
+/fleet_logs/
+/report_results/
+/diagnostics/
+/scenario1.txt
+
+# Run-local manifests and timing snapshots
+*_manifest.yaml
+*_chrony.txt
+
+# ---------------------------------------------------------------------------
+# External algorithm/source checkouts
+# ---------------------------------------------------------------------------
+/Algorithms/
+/Swarm-SLAM/
+/Distributed_SLAM/
+/external/
+/workspaces/
+
+# Legacy offline Swarm-SLAM generated data locations
 /offline_swarmslam/downloaded_bags/
 /offline_swarmslam/offline_slam_data/
 /offline_swarmslam/models/
 /offline_swarmslam/results/
-*_manifest.yaml
-*_chrony.txt
 
-# External source checkouts
-/external/
-
-# Local diagnostic output
-/diagnostics/
-
-# macOS
+# ---------------------------------------------------------------------------
+# IDE / OS metadata
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
 .DS_Store

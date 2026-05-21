@@ -19,6 +19,9 @@
   <arg name="depth_width" default="$(optenv CAMERA_DEPTH_WIDTH 640)" />
   <arg name="depth_height" default="$(optenv CAMERA_DEPTH_HEIGHT 480)" />
   <arg name="depth_fps" default="$(optenv CAMERA_DEPTH_FPS 15)" />
+  <arg name="rgb_enable_auto_exposure" default="$(optenv CAMERA_RGB_AUTO_EXPOSURE true)" />
+  <arg name="rgb_exposure" default="$(optenv CAMERA_RGB_EXPOSURE 166)" />
+  <arg name="rgb_gain" default="$(optenv CAMERA_RGB_GAIN 64)" />
   <arg name="enable_apriltag" default="$(optenv ENABLE_APRILTAG false)" />
   <arg name="enable_aruco" default="$(optenv ENABLE_ARUCO false)" />
   <arg name="aruco_dictionary" default="$(optenv ARUCO_DICTIONARY original)" />
@@ -34,6 +37,9 @@
     <arg name="depth_width" value="$(arg depth_width)" />
     <arg name="depth_height" value="$(arg depth_height)" />
     <arg name="depth_fps" value="$(arg depth_fps)" />
+    <arg name="rgb_enable_auto_exposure" value="$(arg rgb_enable_auto_exposure)" />
+    <arg name="rgb_exposure" value="$(arg rgb_exposure)" />
+    <arg name="rgb_gain" value="$(arg rgb_gain)" />
   </include>
 
   <include if="$(arg enable_apriltag)" file="$(find agv_bringup)/launch/apriltag.launch">

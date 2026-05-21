@@ -1,18 +1,14 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Drive a straight out-and-back path using /odom feedback.
+"""Straight-line odometry P controller.
 
-This is intentionally simple:
-  - record the start /odom pose
-  - drive forward to --distance
-  - stop, then reverse back to the start line position
-  - repeat until --duration expires
+Drives straight using:
+  omega = heading_kp * heading_error - lateral_kp * lateral_error + bias
 
-The controller keeps yaw close to the starting yaw and uses linear.y to shift
-sideways back to the original line. It does not do forced endpoint rotations.
+This keeps the robot on the original odom line. It supports repeated
+out-and-back cycles for scenario 2. The return leg reverses along the same line
+while keeping the same heading target; no endpoint forced rotation is used.
 """
-
-from __future__ import print_function
 
 import argparse
 import math
@@ -27,11 +23,6 @@ from nav_msgs.msg import Odometry
 
 pose = None
 stop_requested = False
-
-try:
-    input_fn = raw_input
-except NameError:
-    input_fn = input
 
 
 def request_stop(signum=None, frame=None):
@@ -61,22 +52,6 @@ def clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def line_coordinates(current_pose, origin_pose):
-    x, y, _ = current_pose
-    ox, oy, oyaw = origin_pose
-    dx = x - ox
-    dy = y - oy
-
-    forward_x = math.cos(oyaw)
-    forward_y = math.sin(oyaw)
-    left_x = -math.sin(oyaw)
-    left_y = math.cos(oyaw)
-
-    along = dx * forward_x + dy * forward_y
-    lateral = dx * left_x + dy * left_y
-    return along, lateral
-
-
 def wait_for_odom(timeout):
     start = time.time()
     while not rospy.is_shutdown() and pose is None:
@@ -94,7 +69,19 @@ def publish_zero(pub, seconds=0.8):
         try:
             rate.sleep()
         except rospy.ROSInterruptException:
-            time.sleep(0.05)
+            break
+
+
+def line_errors(current_pose, origin_pose):
+    x, y, yaw = current_pose
+    ox, oy, oyaw = origin_pose
+    dx = x - ox
+    dy = y - oy
+
+    along = dx * math.cos(oyaw) + dy * math.sin(oyaw)
+    lateral = -dx * math.sin(oyaw) + dy * math.cos(oyaw)
+    heading = angle_delta(oyaw, yaw)
+    return along, lateral, heading
 
 
 def wait_before_motion(pub, args):
@@ -125,7 +112,7 @@ def wait_before_motion(pub, args):
         try:
             rate.sleep()
         except rospy.ROSInterruptException:
-            time.sleep(0.05)
+            break
 
 
 def drive_leg(pub, args, origin_pose, target_along, direction, leg_name, deadline):
@@ -135,8 +122,6 @@ def drive_leg(pub, args, origin_pose, target_along, direction, leg_name, deadlin
     last_report = start
     max_abs_lateral = 0.0
     max_abs_heading = 0.0
-    last_along = 0.0
-    last_lateral = 0.0
 
     while not rospy.is_shutdown() and not stop_requested:
         now = time.time()
@@ -144,11 +129,9 @@ def drive_leg(pub, args, origin_pose, target_along, direction, leg_name, deadlin
             print("Duration reached during %s; stopping." % leg_name)
             break
 
-        along, lateral = line_coordinates(pose, origin_pose)
-        yaw = pose[2]
-        last_along = along
-        last_lateral = lateral
+        along, lateral, heading_error = line_errors(pose, origin_pose)
         max_abs_lateral = max(max_abs_lateral, abs(lateral))
+        max_abs_heading = max(max_abs_heading, abs(heading_error))
 
         remaining = direction * (target_along - along)
         if remaining <= args.position_tolerance:
@@ -158,38 +141,28 @@ def drive_leg(pub, args, origin_pose, target_along, direction, leg_name, deadlin
             )
             break
 
-        if now - start >= args.timeout:
+        if args.timeout > 0.0 and now - start >= args.timeout:
             print(
                 "WARN %s timeout after %.1fs; along=%.3fm target=%.3fm remaining=%.3fm lateral=%.3fm"
                 % (leg_name, args.timeout, along, target_along, remaining, lateral)
             )
             break
 
-        heading_error = angle_delta(origin_pose[2], yaw)
-        max_abs_heading = max(max_abs_heading, abs(heading_error))
-
-        if direction > 0.0:
-            angular_bias = args.outbound_angular_bias
-        else:
-            angular_bias = args.return_angular_bias
+        bias = args.outbound_bias if direction > 0.0 else args.return_bias
+        omega = (
+            args.heading_kp * heading_error
+            - direction * args.lateral_sign * args.lateral_kp * lateral
+            + bias
+        )
 
         msg.linear.x = direction * args.linear
-        msg.linear.y = clamp(
-            args.lateral_sign * args.lateral_kp * lateral,
-            -args.max_lateral,
-            args.max_lateral,
-        )
-        msg.angular.z = clamp(
-            args.heading_kp * heading_error + angular_bias,
-            -args.max_angular,
-            args.max_angular,
-        )
-
+        msg.linear.y = 0.0
+        msg.angular.z = clamp(omega, -args.max_angular, args.max_angular)
         pub.publish(msg)
 
         if args.verbose and now - last_report >= args.report_period:
             print(
-                "%s: elapsed=%.1fs along=%.3fm target=%.3fm lateral=%.3fm heading=%.1fdeg cmd=(%.3f, %.3f, %.3f)"
+                "%s: elapsed=%.1fs along=%.3fm target=%.3fm lateral=%.3fm heading=%.1fdeg cmd=(%.3f, %.3f)"
                 % (
                     leg_name,
                     now - start,
@@ -198,7 +171,6 @@ def drive_leg(pub, args, origin_pose, target_along, direction, leg_name, deadlin
                     lateral,
                     math.degrees(heading_error),
                     msg.linear.x,
-                    msg.linear.y,
                     msg.angular.z,
                 )
             )
@@ -207,15 +179,13 @@ def drive_leg(pub, args, origin_pose, target_along, direction, leg_name, deadlin
         try:
             rate.sleep()
         except rospy.ROSInterruptException:
-            time.sleep(0.05)
+            break
 
     publish_zero(pub, seconds=args.pause)
     return {
         "elapsed": time.time() - start,
-        "along": last_along,
-        "lateral": last_lateral,
-        "max_abs_lateral": max_abs_lateral,
-        "max_abs_heading": max_abs_heading,
+        "max_lateral": max_abs_lateral,
+        "max_heading": max_abs_heading,
     }
 
 
@@ -241,48 +211,45 @@ def drive_out_and_back(pub, args):
         print("Starting straight cycle %d." % cycle)
 
         last_out = drive_leg(
-            pub,
-            args,
-            origin_pose,
-            target_along=args.distance,
-            direction=1.0,
-            leg_name="cycle%d outbound" % cycle,
-            deadline=deadline,
+            pub, args, origin_pose, args.distance, 1.0,
+            "cycle%d outbound" % cycle, deadline
         )
-
         if rospy.is_shutdown() or stop_requested:
             break
         if deadline is not None and time.time() >= deadline:
             break
 
         last_back = drive_leg(
-            pub,
-            args,
-            origin_pose,
-            target_along=0.0,
-            direction=-1.0,
-            leg_name="cycle%d return" % cycle,
-            deadline=deadline,
+            pub, args, origin_pose, 0.0, -1.0,
+            "cycle%d return" % cycle, deadline
         )
 
         if args.duration <= 0.0:
             break
+        if args.cycles > 0 and cycle >= args.cycles:
+            break
 
     publish_zero(pub, seconds=1.0)
-    final_along, final_lateral = line_coordinates(pose, origin_pose)
+    final_along, final_lateral, final_heading = line_errors(pose, origin_pose)
     final_error = math.hypot(final_along, final_lateral)
     print(
-        "Straight path complete: elapsed=%.1fs cycles=%d final_error=%.3fm final_along=%.3fm final_lateral=%.3fm"
-        % (time.time() - start_time, cycle, final_error, final_along, final_lateral)
+        "Straight PID complete: elapsed=%.1fs cycles=%d final_error=%.3fm final_along=%.3fm final_lateral=%.3fm final_heading=%.1fdeg"
+        % (
+            time.time() - start_time,
+            cycle,
+            final_error,
+            final_along,
+            final_lateral,
+            math.degrees(final_heading),
+        )
     )
-
     if last_out is not None:
         print(
             "  last outbound: elapsed=%.1fs max_lateral=%.3fm max_heading=%.1fdeg"
             % (
                 last_out["elapsed"],
-                last_out["max_abs_lateral"],
-                math.degrees(last_out["max_abs_heading"]),
+                last_out["max_lateral"],
+                math.degrees(last_out["max_heading"]),
             )
         )
     if last_back is not None:
@@ -290,52 +257,36 @@ def drive_out_and_back(pub, args):
             "  last return: elapsed=%.1fs max_lateral=%.3fm max_heading=%.1fdeg"
             % (
                 last_back["elapsed"],
-                last_back["max_abs_lateral"],
-                math.degrees(last_back["max_abs_heading"]),
+                last_back["max_lateral"],
+                math.degrees(last_back["max_heading"]),
             )
         )
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(description="Drive a straight out-and-back path on /cmd_vel")
-    parser.add_argument("--distance", type=float, default=1.50,
-                        help="Outbound odom distance in metres")
-    parser.add_argument("--linear", "--speed", dest="linear", type=float, default=0.16,
-                        help="Forward/reverse x command magnitude")
+    parser = argparse.ArgumentParser(description="Straight-line odom P controller")
+    parser.add_argument("--distance", type=float, default=3.0)
+    parser.add_argument("--linear", type=float, default=0.10)
     parser.add_argument("--duration", type=float, default=0.0,
                         help="Run duration in seconds; 0 means one out-and-back cycle")
-    parser.add_argument("--pause", type=float, default=0.5,
-                        help="Seconds to send zero at each endpoint")
-    parser.add_argument("--timeout", type=float, default=40.0,
-                        help="Maximum seconds per leg")
-    parser.add_argument("--heading-kp", type=float, default=0.25,
-                        help="P gain from odom yaw error to angular.z")
-    parser.add_argument("--lateral-kp", type=float, default=0.25,
-                        help="P gain from odom lateral line error to linear.y")
-    parser.add_argument("--max-angular", type=float, default=0.12,
-                        help="Maximum absolute angular.z command")
-    parser.add_argument("--max-lateral", type=float, default=0.06,
-                        help="Maximum absolute linear.y command")
+    parser.add_argument("--cycles", type=int, default=0,
+                        help="Optional cycle count; 0 means use duration/one cycle")
+    parser.add_argument("--heading-kp", type=float, default=0.8)
+    parser.add_argument("--lateral-kp", type=float, default=0.4)
     parser.add_argument("--lateral-sign", type=float, default=1.0,
-                        help="Use -1 if linear.y correction moves farther from the line")
-    parser.add_argument("--outbound-angular-bias", type=float, default=0.0,
-                        help="Constant angular.z bias while driving outbound")
-    parser.add_argument("--return-angular-bias", type=float, default=0.0,
-                        help="Constant angular.z bias while reversing back")
-    parser.add_argument("--position-tolerance", type=float, default=0.04,
-                        help="Endpoint tolerance in metres")
-    parser.add_argument("--start-delay", type=float, default=0.0,
-                        help="Seconds to wait before moving")
-    parser.add_argument("--start-at-epoch", type=float, default=0.0,
-                        help="Unix epoch base time for scheduled start; start-delay is added")
-    parser.add_argument("--rate", type=float, default=20.0,
-                        help="Control loop rate in Hz")
-    parser.add_argument("--report-period", type=float, default=2.0,
-                        help="Verbose report period in seconds")
-    parser.add_argument("--no-prompt", action="store_true",
-                        help="Start immediately without pressing Enter")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Print periodic odom feedback")
+                        help="Flip to -1 if lateral correction moves the wrong way")
+    parser.add_argument("--max-angular", type=float, default=0.25)
+    parser.add_argument("--outbound-bias", type=float, default=0.0)
+    parser.add_argument("--return-bias", type=float, default=0.0)
+    parser.add_argument("--position-tolerance", type=float, default=0.05)
+    parser.add_argument("--pause", type=float, default=0.8)
+    parser.add_argument("--timeout", type=float, default=50.0)
+    parser.add_argument("--start-delay", type=float, default=0.0)
+    parser.add_argument("--start-at-epoch", type=float, default=0.0)
+    parser.add_argument("--rate", type=float, default=20.0)
+    parser.add_argument("--report-period", type=float, default=2.0)
+    parser.add_argument("--no-prompt", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -344,16 +295,16 @@ def main(argv):
     args.distance = max(0.05, args.distance)
     args.linear = clamp(abs(args.linear), 0.0, 1.0)
     args.duration = max(0.0, args.duration)
-    args.pause = max(0.0, args.pause)
-    args.timeout = max(1.0, args.timeout)
+    args.cycles = max(0, args.cycles)
     args.heading_kp = max(0.0, args.heading_kp)
     args.lateral_kp = max(0.0, args.lateral_kp)
-    args.max_angular = clamp(abs(args.max_angular), 0.0, 1.0)
-    args.max_lateral = clamp(abs(args.max_lateral), 0.0, 1.0)
     args.lateral_sign = 1.0 if args.lateral_sign >= 0.0 else -1.0
-    args.outbound_angular_bias = clamp(args.outbound_angular_bias, -args.max_angular, args.max_angular)
-    args.return_angular_bias = clamp(args.return_angular_bias, -args.max_angular, args.max_angular)
+    args.max_angular = clamp(abs(args.max_angular), 0.0, 1.0)
+    args.outbound_bias = clamp(args.outbound_bias, -args.max_angular, args.max_angular)
+    args.return_bias = clamp(args.return_bias, -args.max_angular, args.max_angular)
     args.position_tolerance = clamp(abs(args.position_tolerance), 0.01, 0.25)
+    args.pause = max(0.0, args.pause)
+    args.timeout = max(0.0, args.timeout)
     args.start_delay = max(0.0, args.start_delay)
     args.start_at_epoch = max(0.0, args.start_at_epoch)
     args.rate = max(5.0, args.rate)
@@ -362,30 +313,32 @@ def main(argv):
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
-    rospy.init_node("agv_drive_straight")
+    rospy.init_node("drive_straight_pid")
     rospy.Subscriber("/odom", Odometry, odom_cb, queue_size=20)
     pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)
 
     wait_for_odom(timeout=10.0)
-    publish_zero(pub)
+    publish_zero(pub, seconds=0.5)
 
-    print("Straight drive ready:")
+    print("Straight PID ready:")
     print(
-        "  distance=%.2fm linear=%.2f duration=%.1fs pause=%.1fs timeout=%.1fs"
-        % (args.distance, args.linear, args.duration, args.pause, args.timeout)
+        "  distance=%.2fm linear=%.2f duration=%.1fs heading_kp=%.2f lateral_kp=%.2f max_angular=%.2f"
+        % (
+            args.distance,
+            args.linear,
+            args.duration,
+            args.heading_kp,
+            args.lateral_kp,
+            args.max_angular,
+        )
     )
     print(
-        "  heading_kp=%.2f lateral_kp=%.2f max_angular=%.2f max_lateral=%.2f lateral_sign=%.0f"
-        % (args.heading_kp, args.lateral_kp, args.max_angular, args.max_lateral, args.lateral_sign)
+        "  lateral_sign=%.0f outbound_bias=%.3f return_bias=%.3f tolerance=%.2fm"
+        % (args.lateral_sign, args.outbound_bias, args.return_bias, args.position_tolerance)
     )
-    print(
-        "  outbound_bias=%.3f return_bias=%.3f start_delay=%.1fs"
-        % (args.outbound_angular_bias, args.return_angular_bias, args.start_delay)
-    )
-    print("  Ctrl+C stops the robot.")
 
     if not args.no_prompt:
-        input_fn("Press Enter to start, or Ctrl+C to cancel...")
+        input("Press Enter to start, or Ctrl+C to cancel...")
 
     wait_before_motion(pub, args)
 
@@ -394,7 +347,7 @@ def main(argv):
             drive_out_and_back(pub, args)
     finally:
         publish_zero(pub, seconds=1.0)
-        print("Straight drive finished; zero velocity sent.")
+        print("Straight PID finished; zero velocity sent.")
 
 
 if __name__ == "__main__":

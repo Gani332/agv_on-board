@@ -1,6 +1,7 @@
 # Sensor Extrinsics — All transforms relative to base_footprint
 # -----------------------------------------------------------------------
-# STATUS: PLACEHOLDER — fill in from physical measurement or CAD
+# STATUS: documented robot-side extrinsics from CAD, launch files, and measured
+# reference values. Remaining caveats are marked per transform below.
 #
 # Convention:
 #   All transforms are expressed as [x, y, z, roll, pitch, yaw]
@@ -38,14 +39,18 @@ measurement_method: "cad"  # tape_measure | cad | checkerboard_optimisation
 base_footprint_to_base_link:
   x: 0.0
   y: 0.0
-  z: 0.0        # PLACEHOLDER — measure height of robot body centre from ground
+  z: 0.0        # base_link is currently colocated with base_footprint
   roll: 0.0
   pitch: 0.0
   yaw: 0.0
 
 # base_footprint → laser_frame
-# z=0.10m physically measured 2026-03-15. yaw=0 (X2 parallel to ground, forward-facing).
-# x/y (forward/lateral offset from robot centre) still need tape-measure — pending.
+# z=0.10m physically measured/reference value from 2026-03-15.
+# The active local ydlidar_ros_driver X2.launch publishes z=0.20m, so this
+# reference value must be reconciled with the launch file before claiming
+# high-precision LiDAR-only localisation. yaw=0 (X2 parallel to ground,
+# forward-facing). x/y (forward/lateral offset from robot centre) still need
+# tape-measure — pending.
 base_footprint_to_laser_frame:
   x: 0.0        # pending tape-measure
   y: 0.0        # pending tape-measure

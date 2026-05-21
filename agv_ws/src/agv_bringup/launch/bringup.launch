@@ -1,13 +1,22 @@
 <launch>
 
   <arg name="enable_imu" default="false" />
+  <arg name="realsense_align_depth" default="true" />
   <arg name="enable_realsense_sync" default="true" />
+  <arg name="realsense_initial_reset" default="false" />
+  <arg name="realsense_unite_imu_method" default="linear_interpolation" />
+  <arg name="enable_camera_imu_fuser" default="false" />
+  <arg name="camera_imu_fuser_start_delay" default="25.0" />
+  <arg name="publish_base_imu" default="true" />
   <arg name="color_width" default="640" />
   <arg name="color_height" default="480" />
   <arg name="color_fps" default="15" />
   <arg name="depth_width" default="640" />
   <arg name="depth_height" default="480" />
   <arg name="depth_fps" default="15" />
+  <arg name="rgb_enable_auto_exposure" default="$(optenv CAMERA_RGB_AUTO_EXPOSURE true)" />
+  <arg name="rgb_exposure" default="$(optenv CAMERA_RGB_EXPOSURE 166)" />
+  <arg name="rgb_gain" default="$(optenv CAMERA_RGB_GAIN 64)" />
 
   <!-- 1. Start the AGV base driver (motion + odom + TF) -->
   <!-- serial_port: the USB-serial device for the STM32 base controller.
@@ -16,6 +25,7 @@
   <node pkg="myagv_odometry" type="myagv_odometry_node" name="myagv_odometry_node" output="screen">
     <rosparam command="load" file="$(find agv_bringup)/config/base.yaml" />
     <param name="serial_port" value="$(arg serial_port)" />
+    <param name="publish_imu" value="$(arg publish_base_imu)" />
   </node>
 
   <!-- 2. Start the YDLIDAR X2 driver -->
@@ -25,7 +35,10 @@
        Values from assembly.urdf CAD (original mount, reverted 2026-03-15).
        L-bracket mount trialled but caused significant LiDAR blockage; original mount restored.
        Orientation: rpy=(pi/2, -0.007906, -pi/2).
-       NOTE: laser_frame TF is published by X2.launch (z=0.10m measured, yaw=0). -->
+       NOTE: laser_frame TF is published by X2.launch. The local driver launch
+       currently publishes z=0.20m; the measured/reference value documented in
+       calibration files is z=0.10m, so LiDAR-only precision results carry a
+       known extrinsic caveat until the active launch is reconciled. -->
   <node pkg="tf" type="static_transform_publisher" name="base_to_camera_link"
         args="-0.132025 0.000153 0.187925 -1.570796 -0.007906 1.570796 /base_footprint /camera_link 40" />
 
@@ -35,21 +48,34 @@
   <node pkg="tf" type="static_transform_publisher" name="base_footprint_to_base_link"
         args="0.0 0.0 0.0 0.0 0.0 0.0 /base_footprint /base_link 40" />
 
-  <!-- Base MCU IMU frame. The /imu topic comes from myagv_odometry_node,
-       not from the D455 motion module. -->
-  <node pkg="tf" type="static_transform_publisher" name="base_to_imu_link"
+  <!-- Base MCU IMU frame. The /imu topic comes from myagv_odometry_node.
+       Disable this when recording the D455 camera IMU as the dataset IMU. -->
+  <node if="$(arg publish_base_imu)" pkg="tf" type="static_transform_publisher" name="base_to_imu_link"
         args="0.0 0.0 0.0 0.0 3.14159 3.14159 /base_footprint /imu_link 40" />
 
   <!-- RealSense D455: colour + aligned depth.
        Live check on 2026-04-29: RGB/depth are stable on USB 3.2; the D455
        motion module publishes IMU only when video streams are disabled. Keep
-       enable_imu=false for reliable RGB-D dataset recording until that driver/
-       device issue is fixed. align_depth is required for RGB-D SLAM.
-       Robot 2 may need a lower-load profile, e.g. 424x240 @ 15 Hz. -->
+       enable_imu=false for legacy RGB-D dataset recording. On this Pi/D455
+       stack, online align_depth can force-pause the D455 motion module, so
+       camera-IMU runs should set realsense_align_depth=false and align offline.
+       With RSUSB, publish raw accel/gyro using unite_imu_method=none and avoid
+       the online camera_raw_imu_fuser. On AGV0 the RSUSB path exposes the D455
+       motion module, but a 10-minute full-stack test at 480x270 @ 15 Hz showed
+       raw accel/gyro stopped after 259 s while RGB-D continued. Use this path
+       for debugging, not production collection, unless it is revalidated for
+       the target run duration. -->
+  <group ns="camera">
+      <param name="rgb_camera/enable_auto_exposure" type="bool" value="$(arg rgb_enable_auto_exposure)" />
+      <param unless="$(arg rgb_enable_auto_exposure)" name="rgb_camera/exposure" type="int" value="$(arg rgb_exposure)" />
+      <param unless="$(arg rgb_enable_auto_exposure)" name="rgb_camera/gain" type="int" value="$(arg rgb_gain)" />
+  </group>
+
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
-      <arg name="align_depth"         value="true"/>
+      <arg name="align_depth"         value="$(arg realsense_align_depth)"/>
       <arg name="enable_pointcloud"   value="false"/>
       <arg name="enable_sync"         value="$(arg enable_realsense_sync)"/>
+      <arg name="initial_reset"       value="$(arg realsense_initial_reset)"/>
       <arg name="color_width"         value="$(arg color_width)"/>
       <arg name="color_height"        value="$(arg color_height)"/>
       <arg name="color_fps"           value="$(arg color_fps)"/>
@@ -58,7 +84,16 @@
       <arg name="depth_fps"           value="$(arg depth_fps)"/>
       <arg name="enable_accel"        value="$(arg enable_imu)"/>
       <arg name="enable_gyro"         value="$(arg enable_imu)"/>
-      <arg name="unite_imu_method"    value="linear_interpolation"/>
+      <arg name="unite_imu_method"    value="$(arg realsense_unite_imu_method)"/>
   </include>
+
+  <node if="$(arg enable_camera_imu_fuser)" pkg="agv_bringup" type="camera_raw_imu_fuser.py"
+        name="camera_raw_imu_fuser" output="screen">
+      <param name="accel_topic" value="/camera/accel/sample" />
+      <param name="gyro_topic" value="/camera/gyro/sample" />
+      <param name="output_topic" value="/camera/imu" />
+      <param name="frame_id" value="camera_imu_optical_frame" />
+      <param name="start_delay" value="$(arg camera_imu_fuser_start_delay)" />
+  </node>
 
 </launch>
