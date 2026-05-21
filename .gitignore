@@ -66,6 +66,16 @@ __pycache__/
 /external/
 /workspaces/
 
+# Benchmark wrappers live in the separate ORKAR_benchmarking repository.
+/scripts/benchmarking/
+/scripts/orbslam3/
+/scripts/rtabmap/
+/scripts/slam_toolbox/
+/scripts/cartographer/
+/scripts/swarmslam/
+/scripts/covins/
+/scripts/ptam/
+
 # Legacy offline Swarm-SLAM generated data locations
 /offline_swarmslam/downloaded_bags/
 /offline_swarmslam/offline_slam_data/

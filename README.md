@@ -229,21 +229,10 @@ agv_on-board/
 └── configs/                    RViz configs
 ```
 
-External algorithm checkouts, raw bags, public datasets, and generated benchmark
-outputs are local workspace artefacts and are intentionally ignored by git. See
-`docs/BENCHMARKING_PUSH_GUIDE.md` before staging benchmark code.
-
-Preview a clean benchmark/report staging set:
-
-```bash
-bash scripts/benchmarking/stage_benchmark_code.sh
-```
-
-Stage only the intended source/documentation paths:
-
-```bash
-bash scripts/benchmarking/stage_benchmark_code.sh --stage
-```
+External algorithm checkouts, raw bags, public datasets, generated benchmark
+outputs, and benchmarking wrappers are local workspace artefacts and are
+intentionally kept out of this robot deployment repository. Benchmarking code
+lives in the separate `ORKAR_benchmarking` repository.
 
 ## Robot Runtime
 
