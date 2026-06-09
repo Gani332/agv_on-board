@@ -1,0 +1,30 @@
+[workspace]
+name = "agv-on-board"
+version = "0.1.0"
+description = "ROS 2 client tools for OptiTrack mocap topic discovery."
+channels = ["robostack-humble", "conda-forge"]
+platforms = ["osx-arm64"]
+
+[activation.env]
+ROS_DOMAIN_ID = "0"
+ROS_LOCALHOST_ONLY = "0"
+RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"
+
+[tasks]
+ros2-topic-list = "ros2 topic list --no-daemon --spin-time 5"
+ros2-topic-list-types = "ros2 topic list -t --no-daemon --spin-time 5"
+ros2-node-list = "ros2 node list --no-daemon --spin-time 5"
+ros2-doctor = "ros2 doctor --report"
+mocap-watch-agv1 = "python scripts/mocap/natnet_watch.py --name orkar_agv1"
+mocap-publish-agv1-ros2 = "python scripts/mocap/natnet_ros2_pose_publisher.py --name orkar_agv1 --topic /optitrack/rigid_bodies/orkar_agv1"
+ros2-echo-agv1 = "ros2 topic echo --once --no-daemon --spin-time 5 /optitrack/rigid_bodies/orkar_agv1"
+
+[dependencies]
+ros-humble-ros-base = "*"
+ros-humble-ros2topic = "*"
+ros-humble-ros2node = "*"
+ros-humble-ros2doctor = "*"
+ros-humble-rmw-cyclonedds-cpp = "*"
+
+[pypi-dependencies]
+natnet = ">=0.2.0, <0.3"

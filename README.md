@@ -1,6 +1,6 @@
 # AGV On-Board Stack
 
-Robot-side ROS Melodic stack for AGV data collection in the multi-robot SLAM dataset project.
+Robot-side ROS 1 stack for AGV data collection in the multi-robot SLAM dataset project.
 
 The goal of this repo is repeatable deployment: clone or pull it on a robot, run one setup script, then collect bags with a single session command.
 
@@ -84,20 +84,25 @@ Drive manually in another terminal:
 
 ```bash
 ssh ubuntu@<robot-ip>
-source /opt/ros/melodic/setup.bash
+source /opt/ros/noetic/setup.bash
 source ~/slam_project/myagv_ros/devel/setup.bash
 rosrun myagv_teleop myagv_teleop.py
 ```
 
-Or run a conservative automatic square:
+Or run the validated OptiTrack mocap-feedback 1x1 square:
 
 ```bash
 ssh ubuntu@<robot-ip>
 cd ~/slam_project
-source /opt/ros/melodic/setup.bash
-source ~/slam_project/myagv_ros/devel/setup.bash
+source /opt/ros/noetic/setup.bash
 source ~/slam_project/agv_ws/devel/setup.bash
-python scripts/logging/drive_square.py --side 0.75 --linear 0.22 --angular 0.28 --cycles 1
+python3 scripts/logging/drive_square.py --yes
+```
+
+The older odom-feedback square helper is still available for non-mocap tests:
+
+```bash
+python scripts/logging/drive_square_odom.py --side 0.75 --linear 0.22 --angular 0.28 --cycles 1
 ```
 
 Or run a concentric-circle S1 motion test:
@@ -105,7 +110,7 @@ Or run a concentric-circle S1 motion test:
 ```bash
 ssh ubuntu@<robot-ip>
 cd ~/slam_project
-source /opt/ros/melodic/setup.bash
+source /opt/ros/noetic/setup.bash
 source ~/slam_project/myagv_ros/devel/setup.bash
 source ~/slam_project/agv_ws/devel/setup.bash
 python scripts/logging/drive_circle.py --radius 1.00 --linear 0.16 --duration 60 --no-prompt --verbose
@@ -132,10 +137,17 @@ Terminal 2, drive the straight line:
 ```bash
 ssh ubuntu@<robot-ip>
 cd ~/slam_project
-source /opt/ros/melodic/setup.bash
-source ~/slam_project/myagv_ros/devel/setup.bash
+source /opt/ros/noetic/setup.bash
 source ~/slam_project/agv_ws/devel/setup.bash
-python scripts/logging/drive_straight.py --distance 1.50 --speed 0.18
+python3 scripts/logging/drive_mocap_straight.py \
+  --pose-topic /gt/agv1/pose \
+  --distance 1.0 \
+  --linear 0.12 \
+  --timeout 12 \
+  --line-yaw-offset-deg 90 \
+  --max-lateral-error 0.15 \
+  --yes \
+  --verbose
 ```
 
 Stop Terminal 1 with `Ctrl+C`, then validate:
@@ -160,10 +172,9 @@ In another terminal:
 ```bash
 ssh ubuntu@<robot-ip>
 cd ~/slam_project
-source /opt/ros/melodic/setup.bash
-source ~/slam_project/myagv_ros/devel/setup.bash
+source /opt/ros/noetic/setup.bash
 source ~/slam_project/agv_ws/devel/setup.bash
-python scripts/logging/drive_square.py --side 0.75 --linear 0.22 --angular 0.28 --cycles 1
+python3 scripts/logging/drive_square.py --yes
 ```
 
 Stop recording and validate again:
@@ -171,6 +182,92 @@ Stop recording and validate again:
 ```bash
 python3 scripts/logging/validate_bag.py $(ls -t ~/agv_data/*.bag | head -1)
 python scripts/logging/audit_bag_fast.py $(ls -t ~/agv_data/*.bag | head -1)
+```
+
+## OptiTrack Mocap Driving
+
+The current AGV 1 mocap setup uses the Motive rigid body `orkar_agv1`.
+The ROS 1 control topic is `/gt/agv1/pose`, with a convenience relay on
+`/optitrack/rigid_bodies/orkar_agv1`. Both are `geometry_msgs/PoseStamped`.
+The calibrated forward direction is rigid-body yaw plus 90 degrees; those
+defaults are stored in `agv_ws/src/agv_bringup/calibration/optitrack_agv1.yaml`.
+
+Before moving, verify that the mocap source is live:
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+export ROS_MASTER_URI=http://localhost:11311
+unset ROS_IP ROS_HOSTNAME
+
+rostopic echo -n 1 /gt/agv1/pose
+rostopic echo -n 1 /optitrack/rigid_bodies/orkar_agv1
+```
+
+Drive 1 m forward using mocap feedback:
+
+```bash
+python3 scripts/logging/drive_mocap_straight.py \
+  --pose-topic /gt/agv1/pose \
+  --distance 1.0 \
+  --linear 0.12 \
+  --timeout 12 \
+  --line-yaw-offset-deg 90 \
+  --max-lateral-error 0.15 \
+  --yes \
+  --verbose
+```
+
+Drive 6 m forward quickly, when the arena is clear:
+
+```bash
+python3 scripts/logging/drive_mocap_straight.py \
+  --pose-topic /gt/agv1/pose \
+  --distance 6.0 \
+  --linear 0.20 \
+  --timeout 45 \
+  --line-yaw-offset-deg 90 \
+  --max-lateral-error 0.18 \
+  --yes \
+  --verbose
+```
+
+Drive the validated 1x1 m square profile:
+
+```bash
+python3 scripts/logging/drive_square.py --yes
+```
+
+On a laptop with Pixi installed, the ROS 2 and NatNet inspection helpers are:
+
+```bash
+pixi run ros2-topic-list-types
+pixi run ros2-echo-agv1
+pixi run mocap-watch-agv1
+```
+
+If `/optitrack/rigid_bodies/orkar_agv1` exists but `rostopic echo` prints
+nothing, the relay is probably still registered while `vrpn_client_node` is no
+longer forwarding from Motive. Restart the mocap source and relays:
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/slam_project/agv_ws/devel/setup.bash
+export ROS_MASTER_URI=http://localhost:11311
+unset ROS_IP ROS_HOSTNAME
+
+rosnode cleanup
+pkill -f 'vrpn_client_ros sample.launch server:=192.168.50.200' || true
+pkill -f 'vrpn_client_node' || true
+pkill -f 'topic_tools.*relay.*/vrpn_client_node/orkar_agv1/pose' || true
+
+nohup bash -lc 'source /opt/ros/noetic/setup.bash; source ~/slam_project/agv_ws/devel/setup.bash; export ROS_MASTER_URI=http://localhost:11311; unset ROS_IP ROS_HOSTNAME; roslaunch vrpn_client_ros sample.launch server:=192.168.50.200' \
+  > ~/.ros/vrpn_mocap_drive.log 2>&1 &
+sleep 4
+nohup bash -lc 'source /opt/ros/noetic/setup.bash; export ROS_MASTER_URI=http://localhost:11311; unset ROS_IP ROS_HOSTNAME; rosrun topic_tools relay /vrpn_client_node/orkar_agv1/pose /gt/agv1/pose' \
+  > ~/.ros/relay_gt_agv1_pose.log 2>&1 &
+nohup bash -lc 'source /opt/ros/noetic/setup.bash; export ROS_MASTER_URI=http://localhost:11311; unset ROS_IP ROS_HOSTNAME; rosrun topic_tools relay /vrpn_client_node/orkar_agv1/pose /optitrack/rigid_bodies/orkar_agv1' \
+  > ~/.ros/relay_optitrack_orkar_agv1.log 2>&1 &
 ```
 
 ## What Is Production
@@ -183,9 +280,13 @@ scripts/logging/start_session.sh           One-command bringup + rosbag + manife
 scripts/logging/validate_bag.py            Full post-run publishability check
 scripts/logging/audit_bag_fast.py          Fast topic/rate/gap/sync audit
 scripts/logging/drive_straight.py          Odom-bounded straight-line dataset helper
-scripts/logging/drive_square.py            Odom-bounded square motion helper
+scripts/logging/drive_mocap_straight.py    OptiTrack mocap-feedback straight-line helper
+scripts/logging/drive_mocap_square.py      OptiTrack mocap-feedback square helper
+scripts/logging/drive_square.py            Validated OptiTrack 1x1 square wrapper
+scripts/logging/drive_square_odom.py       Archived odom-feedback square motion helper
 scripts/logging/drive_circle.py            Odom-feedback circular motion helper for S1
 scripts/logging/drive_forward_back.py      Odom-bounded smoke-test motion helper
+scripts/mocap/                             Direct NatNet discovery/publisher fallback tools
 agv_ws/src/agv_bringup/launch/bringup.launch
 agv_ws/src/agv_bringup/launch/logging.launch
 agv_ws/src/agv_bringup/launch/aruco.launch
@@ -239,7 +340,7 @@ lives in the separate `ORKAR_benchmarking` repository.
 Source order matters:
 
 ```bash
-source /opt/ros/melodic/setup.bash
+source /opt/ros/noetic/setup.bash
 source ~/slam_project/myagv_ros/devel/setup.bash
 source ~/slam_project/agv_ws/devel/setup.bash
 ```
@@ -337,7 +438,8 @@ Optional topics are included when available:
 /camera/gyro/sample
 /camera/accel/imu_info
 /camera/gyro/imu_info
-${MOCAP_TOPIC:-/phasespace/rigids}
+/gt/agv1/pose
+/optitrack/rigid_bodies/orkar_agv1
 /mocap
 ```
 
@@ -345,10 +447,12 @@ Use:
 
 ```bash
 export REQUIRE_GT=true
-export MOCAP_TOPIC=/phasespace/rigids
+export MOCAP_TOPIC=/gt/agv1/pose
 ```
 
-when ground truth must be present in the same ROS graph. If PhaseSpace ground truth is recorded separately, keep `REQUIRE_GT=false` and save chrony status on both machines.
+when ground truth must be present in the same ROS graph. If ground truth is
+recorded separately, keep `REQUIRE_GT=false` and save chrony status on both
+machines.
 
 ## Current Validated Baseline
 
@@ -416,7 +520,7 @@ Fast audit:
 
 ```bash
 cd ~/slam_project
-source /opt/ros/melodic/setup.bash
+source /opt/ros/noetic/setup.bash
 source ~/slam_project/agv_ws/devel/setup.bash
 python scripts/logging/audit_bag_fast.py ~/agv_data/<bag>.bag
 ```

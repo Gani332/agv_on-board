@@ -23,6 +23,7 @@ __pycache__/
 *.a
 .cache/
 **/.cache/
+.pixi/
 
 # Local compiled helpers
 /scripts/orbslam3/bin/

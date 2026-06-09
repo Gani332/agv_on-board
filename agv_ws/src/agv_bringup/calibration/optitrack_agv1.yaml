@@ -1,0 +1,43 @@
+# OptiTrack mocap calibration and conservative control defaults for AGV 1.
+#
+# Observed on 2026-06-09:
+#   - Motive rigid body: orkar_agv1
+#   - ROS 1 controller topic: /gt/agv1/pose
+#   - Robot forward is approximately rigid-body yaw + 90 deg.
+
+robot_id: "agv1"
+rigid_body_name: "orkar_agv1"
+
+mocap:
+  pose_topic: "/gt/agv1/pose"
+  optitrack_pose_topic: "/optitrack/rigid_bodies/orkar_agv1"
+  cmd_topic: "/cmd_vel"
+  line_yaw_offset_deg: 90.0
+  frame_id: "world"
+
+control:
+  straight:
+    linear: 0.08
+    min_linear: 0.03
+    heading_kp: 0.55
+    max_angular: 0.25
+    slowdown_distance: 0.35
+    position_tolerance: 0.04
+    max_lateral_error: 0.12
+    pose_timeout: 0.25
+
+  square:
+    side_length: 1.0
+    linear: 0.08
+    min_linear: 0.03
+    heading_kp: 0.55
+    turn_heading_kp: 0.85
+    max_angular: 0.28
+    turn_max_angular: 0.18
+    min_turn_angular: 0.035
+    turn_slowdown_angle_deg: 25.0
+    slowdown_distance: 0.35
+    position_tolerance: 0.03
+    turn_tolerance_deg: 3.0
+    max_lateral_error: 0.15
+    pose_timeout: 0.25
