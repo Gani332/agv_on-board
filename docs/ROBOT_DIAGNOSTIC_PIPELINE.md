@@ -120,6 +120,19 @@ decision.state = blocked -> at least one FAIL; fix before further dataset collec
 `decision.primary_blocker` is the first branch to fix. It contains the
 failure-tree code, check name, evidence paths, and next action.
 
+For operators, each robot_doctor run also writes `decision.txt`, embeds the same
+block in `summary.md`, and prints it at the end of the command:
+
+```text
+READY: false
+FAILED_STAGE: 2.1 OS / kernel / USB
+CAUSE: D455 enumerates OK but UVC -110 timeout during rs-motion test
+EVIDENCE:
+  - logs/rs_enumerate_summary.log
+  - logs/kernel_usb_logs.log
+NEXT_ACTION: power-cycle, swap cable, mark USB host suspect if repeatable
+```
+
 For a full post-run dataset audit on the laptop, validate copied robot reports,
 bags, and session manifests together:
 

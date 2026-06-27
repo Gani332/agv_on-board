@@ -3,9 +3,10 @@
 
 This is intentionally dependency-light so it can run on the robot after a
 session. It checks the same publishability surface as the ROS 1 validator:
-required topics, average rates, timestamp gaps, IMU presence, ground truth, and
-bag readability. It does not deserialize ROS messages; rosbag2 storage
-timestamps are enough to detect missing streams and frame drop patterns.
+required topics, average rates, timestamp gaps, storage timestamp monotonicity,
+IMU presence, ground truth, and bag readability. It does not deserialize ROS
+messages; rosbag2 storage timestamps are enough to detect missing streams, time
+source regressions, and frame drop patterns.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ class TopicStats:
     max_gap_sec: Optional[float]
     minor_gaps: int
     major_gaps: int
+    non_monotonic_count: int
 
     @property
     def duration_sec(self) -> float:
@@ -170,8 +172,10 @@ def target_hz_for_topic(topic: str) -> float:
 
 
 def stats_from_timestamps(topic: str, msg_type: str, timestamps: Sequence[int]) -> TopicStats:
-    if timestamps:
-        ordered = sorted(int(value) for value in timestamps)
+    sequence = [int(value) for value in timestamps]
+    non_monotonic_count = sum(1 for index in range(1, len(sequence)) if sequence[index] < sequence[index - 1])
+    if sequence:
+        ordered = sorted(sequence)
         gaps = [(ordered[i + 1] - ordered[i]) / 1e9 for i in range(len(ordered) - 1)]
         max_gap = max(gaps) if gaps else None
     else:
@@ -199,6 +203,7 @@ def stats_from_timestamps(topic: str, msg_type: str, timestamps: Sequence[int]) 
         max_gap_sec=max_gap,
         minor_gaps=minor_gaps,
         major_gaps=major_gaps,
+        non_monotonic_count=non_monotonic_count,
     )
 
 
@@ -213,7 +218,7 @@ def inspect_sqlite(db_path: Path) -> Dict[str, TopicStats]:
         stats: Dict[str, TopicStats] = {}
         for topic_id, (name, msg_type) in topics.items():
             rows = conn.execute(
-                "SELECT timestamp FROM messages WHERE topic_id=? ORDER BY timestamp",
+                "SELECT timestamp FROM messages WHERE topic_id=? ORDER BY id",
                 (topic_id,),
             ).fetchall()
             timestamps = [int(row["timestamp"]) for row in rows]
@@ -365,6 +370,23 @@ def validate_topic_coverage(
             f"{item.topic} covers bag within {tolerance:.2f}s tolerance",
             item.topic,
         )
+
+
+def validate_storage_timestamp_monotonicity(stats: Dict[str, TopicStats], results: List[Result]) -> None:
+    print("\n--- Storage timestamp monotonicity ---")
+    for topic, item in sorted(stats.items()):
+        if item.count <= 1:
+            continue
+        if item.non_monotonic_count:
+            record(
+                results,
+                FAIL,
+                "timestamp_monotonic",
+                f"{topic}: {item.non_monotonic_count} backwards storage timestamp jump(s)",
+                topic,
+            )
+        else:
+            record(results, PASS, "timestamp_monotonic", f"{topic}: storage timestamps monotonic", topic)
 
 
 def validate_topics(
@@ -595,6 +617,7 @@ def main() -> int:
 
     if stats:
         validate_topics(stats, results, duration_sec, bag_start_ns, bag_end_ns)
+        validate_storage_timestamp_monotonicity(stats, results)
         validate_ground_truth(stats, results, args.require_gt, bag_start_ns, bag_end_ns)
         validate_imu(stats, results, args.require_imu, bag_start_ns, bag_end_ns)
 

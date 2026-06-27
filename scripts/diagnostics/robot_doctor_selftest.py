@@ -31,6 +31,7 @@ from robot_doctor import (  # noqa: E402
     CommandResult,
     apply_gate_config,
     build_parser,
+    format_operator_decision,
     summarize_decision,
 )
 from dataset_run_audit import audit_artifact_consistency, audit_manifests, audit_reports  # noqa: E402
@@ -100,6 +101,7 @@ def write_ros2_bag(
     missing_topic: str = "",
     scan_major_gap: bool = False,
     truncated_topic: str = "",
+    non_monotonic_topic: str = "",
 ) -> None:
     bag_dir.mkdir(parents=True, exist_ok=True)
     db_path = bag_dir / "test_0.db3"
@@ -129,6 +131,8 @@ def write_ros2_bag(
                 offset_ns = int(i * (topic_duration * 1e9 / (n_msgs - 1)))
             if scan_major_gap and name == "/scan" and i > n_msgs // 2:
                 offset_ns += 350_000_000
+            if non_monotonic_topic == name and i == n_msgs // 2:
+                offset_ns = 0
             cur.execute(
                 "INSERT INTO messages VALUES (?,?,?,?)",
                 (msg_id, topic_id, start_ns + offset_ns, b"0"),
@@ -201,6 +205,15 @@ class ValidateRos2BagTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             failures = [item for item in report["results"] if item["level"] == "FAIL"]
             self.assertTrue(any(item["check"] == "scan_coverage" for item in failures))
+
+    def test_non_monotonic_storage_timestamp_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bag = Path(tmp) / "non_monotonic"
+            write_ros2_bag(bag, non_monotonic_topic="/odom")
+            rc, report = run_validator(bag)
+            self.assertEqual(rc, 1)
+            failures = [item for item in report["results"] if item["level"] == "FAIL"]
+            self.assertTrue(any(item["check"] == "timestamp_monotonic" for item in failures))
 
     def test_extra_required_topic_from_env_fails_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -640,6 +653,28 @@ class RobotDoctorParserTests(unittest.TestCase):
 
 
 class RobotDoctorDecisionTests(unittest.TestCase):
+    def test_operator_decision_block_matches_target_shape(self) -> None:
+        report = make_report(
+            [
+                CheckResult(
+                    "2.1",
+                    "FAIL",
+                    "kernel_uvc_errors",
+                    "D455 enumerates OK but UVC -110 timeout during rs-motion test",
+                    evidence=["rs-enumerate-devices.log", "kernel_usb_logs.log"],
+                    next_action="power-cycle, swap cable, mark USB host suspect if repeatable",
+                )
+            ],
+            profile="dataset",
+        )
+        text = format_operator_decision(report)
+        self.assertIn("READY: false", text)
+        self.assertIn("FAILED_STAGE: 2.1 OS / kernel / USB", text)
+        self.assertIn("CAUSE: D455 enumerates OK but UVC -110 timeout during rs-motion test", text)
+        self.assertIn("EVIDENCE:", text)
+        self.assertIn("rs-enumerate-devices.log", text)
+        self.assertIn("NEXT_ACTION: power-cycle, swap cable, mark USB host suspect if repeatable", text)
+
     def test_failure_blocks_tests_and_dataset(self) -> None:
         decision = summarize_decision(
             [
@@ -946,7 +981,7 @@ class RobotDoctorReportValidationTests(unittest.TestCase):
             args.loaded_config = {}
             doctor = Doctor(args)
             doctor.results.append(CheckResult("3.1", "PASS", "disk_free", "ok"))
-            summary_json, _ = doctor.write_reports()
+            summary_json = doctor.write_reports()[0]
             report = json.loads(summary_json.read_text())
             self.assertEqual(report["config_path"], "")
             ok, errors = validate_report(report, summary_json=summary_json)

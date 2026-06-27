@@ -262,6 +262,8 @@ class Audit:
                 "ROBOT_DOCTOR_LOCK_DIR",
                 "diagnostic_lock",
                 "--lock-timeout-seconds",
+                "format_operator_decision",
+                "FAILED_STAGE:",
             ],
             ["scripts/diagnostics/robot_doctor.py"],
         )
@@ -311,6 +313,7 @@ class Audit:
                 "--require-imu",
                 "find_mcap_files",
                 "metadata_yaml",
+                "timestamp_monotonic",
             ],
             ["scripts/logging/validate_ros2_bag.py"],
         )
@@ -343,6 +346,8 @@ class Audit:
                 "viewer_passes_ros2_fails",
                 "d455_infra_fps_cap",
                 "chrony_offset",
+                "READY:",
+                "FAILED_STAGE:",
             ],
             ["docs/ROBOT_DIAGNOSTIC_PIPELINE.md", "docs/ROBOT_DEBUG_PIPELINE_COVERAGE_AUDIT.md"],
         )
@@ -367,6 +372,8 @@ class Audit:
                 "test_d455_infra_fps_cap_detects_15hz_cap_when_higher_fps_requested",
                 "test_ros2_validator_classifies_mcap_read_failure",
                 "test_ros2_validator_warns_when_metadata_yaml_missing",
+                "test_non_monotonic_storage_timestamp_fails",
+                "test_operator_decision_block_matches_target_shape",
             ],
             ["scripts/diagnostics/robot_doctor_selftest.py"],
         )

@@ -33,7 +33,9 @@ Additional failure modes found in the codebase that were not explicit in the DOC
 
 ## Minimum robot_doctor Output Plan
 
-The target output is produced from `summary.json` and `summary.md`:
+The target output is produced in three places: printed at the end of
+`robot_doctor`, embedded in `summary.md`, and written as `decision.txt` beside
+`summary.json`:
 
 ```text
 READY: <dataset_ready>
@@ -48,6 +50,7 @@ Implementation status:
 - Every check is tagged with one of the 3x3 failure-tree codes.
 - Every WARN/FAIL check must carry a `next_action`; the report validator enforces this.
 - `decision.primary_blocker` picks the first hard failure, otherwise the first warning.
+- `decision.txt` provides the operator-facing `READY / FAILED_STAGE / CAUSE / EVIDENCE / NEXT_ACTION` block requested by the context document.
 - Remote wrapper failures synthesize a valid robot_doctor report instead of leaving missing evidence.
 - `dataset_run_audit.py` ties robot reports, bags, and manifests together after collection.
 
@@ -57,10 +60,10 @@ The ROS2 validator now covers:
 
 - `.db3` rosbag2 SQLite storage.
 - `.mcap` storage when the optional Python MCAP reader is installed; otherwise it fails as `bag_integrity` with explicit evidence.
-- Required topics, rates, gaps, stream coverage, GT, IMU, duration, and ROS2 `metadata.yaml`.
+- Required topics, rates, gaps, stream coverage, storage timestamp monotonicity, GT, IMU, duration, and ROS2 `metadata.yaml`.
 - Environment overrides for mocap, command, IMU, depth, and extra required topics.
 
-Remaining optional improvement: deserialize selected message headers to prove `header.stamp` monotonicity independently of rosbag storage timestamps.
+Remaining optional improvement: deserialize selected message headers to prove message `header.stamp` monotonicity independently of rosbag storage timestamps.
 
 ## Fleet-Level Checks
 

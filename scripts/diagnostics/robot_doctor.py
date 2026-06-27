@@ -262,6 +262,38 @@ def summarize_decision(results: Sequence[CheckResult], profile: str = "dataset")
     }
 
 
+def format_operator_decision(report: Dict[str, object]) -> str:
+    decision = report.get("decision", {}) if isinstance(report.get("decision"), dict) else {}
+    primary = decision.get("primary_blocker") if isinstance(decision, dict) else None
+    dataset_ready = bool(report.get("dataset_ready", False))
+
+    if isinstance(primary, dict):
+        code = str(primary.get("code", "unknown"))
+        stage_name = FAILURE_TREE.get(code, {}).get("name", "unknown")
+        failed_stage = f"{code} {stage_name}"
+        cause = str(primary.get("summary", "") or "unknown")
+        evidence = primary.get("evidence", [])
+        next_action = str(primary.get("next_action", "") or "rerun robot_doctor after fixing the failed stage")
+    else:
+        failed_stage = "none"
+        cause = str(decision.get("recommendation", "no blockers")) if isinstance(decision, dict) else "no blockers"
+        evidence = []
+        next_action = "ready for the configured gate" if dataset_ready else "run the dataset profile before publishable collection"
+
+    lines = [
+        f"READY: {str(dataset_ready).lower()}",
+        f"FAILED_STAGE: {failed_stage}",
+        f"CAUSE: {cause}",
+        "EVIDENCE:",
+    ]
+    if isinstance(evidence, list) and evidence:
+        lines.extend(f"  - {item}" for item in evidence)
+    else:
+        lines.append("  - none")
+    lines.append(f"NEXT_ACTION: {next_action}")
+    return "\n".join(lines)
+
+
 def cli_supplied_flags(argv: Sequence[str]) -> set:
     flags = set()
     for arg in argv:
@@ -2681,7 +2713,7 @@ PY
                 next_action="survey fixed anchors/obstacles before publishable scenario collection",
             )
 
-    def write_reports(self) -> Tuple[Path, Path]:
+    def write_reports(self) -> Tuple[Path, Path, Path]:
         counts = {
             PASS: sum(1 for item in self.results if item.status == PASS),
             WARN: sum(1 for item in self.results if item.status == WARN),
@@ -2727,6 +2759,10 @@ PY
         json_path = self.out_dir / "summary.json"
         json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
+        decision_text = format_operator_decision(report)
+        decision_path = self.out_dir / "decision.txt"
+        decision_path.write_text(decision_text + "\n")
+
         md_path = self.out_dir / "summary.md"
         lines = [
             f"# Robot Doctor Summary: {self.args.robot_id}",
@@ -2744,6 +2780,10 @@ PY
             f"- counts: PASS={counts[PASS]} WARN={counts[WARN]} FAIL={counts[FAIL]} INFO={counts[INFO]}",
             "",
             "## Decision",
+            "",
+            "```text",
+            decision_text,
+            "```",
             "",
         ]
         primary_blocker = decision.get("primary_blocker")
@@ -2786,19 +2826,22 @@ PY
             for item in warnings[:30]:
                 lines.append(f"- `{item.code}` **{item.check}**: {item.summary}")
         md_path.write_text("\n".join(lines) + "\n")
-        return json_path, md_path
+        return json_path, md_path, decision_path
 
     def run_all(self) -> int:
         lock_acquired = self.acquire_lock()
         if not lock_acquired:
-            json_path, md_path = self.write_reports()
+            json_path, md_path, decision_path = self.write_reports()
             print("")
             print("=" * 72)
             print("Robot Doctor Complete")
             print("=" * 72)
             print(f"summary: {md_path}")
             print(f"json:    {json_path}")
+            print(f"decision:{decision_path}")
             print(f"logs:    {self.log_dir}")
+            print("")
+            print(decision_path.read_text().rstrip())
             print("verdict: FAIL")
             return 1
         try:
@@ -2813,7 +2856,7 @@ PY
         finally:
             self.stop_bringup()
             self.release_lock()
-        json_path, md_path = self.write_reports()
+        json_path, md_path, decision_path = self.write_reports()
         hard_failures = [item for item in self.results if item.status == FAIL]
         print("")
         print("=" * 72)
@@ -2821,7 +2864,10 @@ PY
         print("=" * 72)
         print(f"summary: {md_path}")
         print(f"json:    {json_path}")
+        print(f"decision:{decision_path}")
         print(f"logs:    {self.log_dir}")
+        print("")
+        print(decision_path.read_text().rstrip())
         print(f"verdict: {'FAIL' if hard_failures else 'PASS/WARN'}")
         return 1 if hard_failures else 0
 
