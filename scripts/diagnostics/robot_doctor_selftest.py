@@ -33,7 +33,7 @@ from robot_doctor import (  # noqa: E402
     build_parser,
     summarize_decision,
 )
-from dataset_run_audit import audit_manifests, audit_reports  # noqa: E402
+from dataset_run_audit import audit_artifact_consistency, audit_manifests, audit_reports  # noqa: E402
 from fleet_doctor_summary import fleet_gate_errors, fleet_readiness_errors  # noqa: E402
 from validate_robot_doctor_report import resolve_evidence_path, validate_report  # noqa: E402
 
@@ -211,12 +211,63 @@ class ValidateRos2BagTests(unittest.TestCase):
             failures = [item for item in report["results"] if item["level"] == "FAIL"]
             self.assertTrue(any(item["check"] == "/custom/required" for item in failures))
 
+    def test_ros2_validator_warns_when_metadata_yaml_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bag = Path(tmp) / "missing_metadata"
+            write_ros2_bag(bag)
+            rc, report = run_validator(bag)
+            self.assertEqual(rc, 0)
+            warnings = [item for item in report["results"] if item["level"] == "WARN"]
+            self.assertTrue(any(item["check"] == "metadata_yaml" for item in warnings))
+
+    def test_ros2_validator_classifies_mcap_read_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bag = Path(tmp) / "empty.mcap"
+            bag.write_bytes(b"")
+            report = Path(tmp) / "report.json"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR),
+                    str(bag),
+                    "--min-duration",
+                    "0",
+                    "--json-out",
+                    str(report),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            data = json.loads(report.read_text())
+            failures = [item for item in data["results"] if item["level"] == "FAIL"]
+            self.assertTrue(any(item["check"] == "bag_integrity" for item in failures), data)
+
 
 class RobotDoctorParserTests(unittest.TestCase):
     def test_clock_parser_requires_ntp_yes(self) -> None:
         self.assertTrue(Doctor.clock_synchronized("NTPSynchronized=yes\nTimezone=Europe/London\n"))
         self.assertFalse(Doctor.clock_synchronized("NTPSynchronized=no\nTimezone=Europe/London\n"))
         self.assertFalse(Doctor.clock_synchronized("Timezone=Europe/London\n"))
+
+    def test_chrony_tracking_parser_enforces_sub_ms_gate(self) -> None:
+        ok_text = (
+            "Reference ID    : 192.168.50.1\n"
+            "System time     : 0.000123456 seconds slow of NTP time\n"
+            "Last offset     : +0.000234567 seconds\n"
+            "RMS offset      : 0.000345678 seconds\n"
+            "Leap status     : Normal\n"
+        )
+        status, summary, _ = Doctor.classify_chrony_tracking(ok_text, 1.0, "dataset")
+        self.assertEqual(status, "PASS")
+        self.assertIn("<= 1.000 ms", summary)
+
+        bad_text = ok_text.replace("0.000345678", "0.002000000")
+        status, summary, next_action = Doctor.classify_chrony_tracking(bad_text, 1.0, "dataset")
+        self.assertEqual(status, "FAIL")
+        self.assertIn("exceeds", summary)
+        self.assertIn("chrony", next_action.lower())
 
     def test_ping_parser_requires_successful_return_code_and_zero_loss(self) -> None:
         self.assertTrue(Doctor.ping_succeeded(0, "2 packets transmitted, 2 received, 0% packet loss"))
@@ -235,14 +286,16 @@ class RobotDoctorParserTests(unittest.TestCase):
         self.assertEqual((code, status, check), ("3.3", "PASS", "wifi_management"))
 
     def test_usb_power_classifier_detects_d455_autosuspend(self) -> None:
-        text = "USB_DEVICE=/sys/bus/usb/devices/2-1\nidVendor=8086\nidProduct=0b5c\nproduct=Intel RealSense D455\nspeed=5000\npower_control=auto\nCMDLINE\nquiet splash\n"
-        results = Doctor.classify_usb_power_policy(text)
+        text = "USB_DEVICE=/sys/bus/usb/devices/2-1\nidVendor=8086\nidProduct=0b5c\nproduct=Intel RealSense D455\nspeed=5000\npower_control=auto\npower_autosuspend_delay_ms=2000\nCMDLINE\nquiet splash\n"
+        results = Doctor.classify_usb_power_policy(text, "dataset")
         self.assertIn(("2.1", "WARN", "d455_usb_autosuspend", "D455 USB autosuspend is enabled (power/control=auto)", "disable autosuspend for the D455 before long dataset runs"), results)
+        self.assertTrue(any(item[0:3] == ("1.2", "FAIL", "d455_usb_autosuspend_delay") for item in results))
 
     def test_usb_power_classifier_accepts_d455_power_on_and_quirk(self) -> None:
-        text = "USB_DEVICE=/sys/bus/usb/devices/2-1\nidVendor=8086\nidProduct=0b5c\nproduct=Intel RealSense D455\nspeed=5000\npower_control=on\nCMDLINE\nusbcore.quirks=8086:0b5c:kn\n"
+        text = "USB_DEVICE=/sys/bus/usb/devices/2-1\nidVendor=8086\nidProduct=0b5c\nproduct=Intel RealSense D455\nspeed=5000\npower_control=on\npower_autosuspend_delay_ms=-1\nCMDLINE\nusbcore.quirks=8086:0b5c:kn\n"
         results = Doctor.classify_usb_power_policy(text)
         self.assertIn(("2.1", "PASS", "d455_usb_autosuspend", "D455 USB autosuspend disabled (power/control=on)", ""), results)
+        self.assertIn(("1.2", "PASS", "d455_usb_autosuspend_delay", "D455 autosuspend_delay_ms=-1", ""), results)
         self.assertIn(("2.1", "PASS", "d455_usb_boot_quirk", "D455 usbcore quirk is present in kernel cmdline", ""), results)
 
     def test_d455_uvc_binding_classifier_accepts_bound_interfaces(self) -> None:
@@ -512,6 +565,16 @@ class RobotDoctorParserTests(unittest.TestCase):
         self.assertEqual((code, status, check), ("2.1", "FAIL", "realsense_depth_stream"))
         self.assertIn("no usable frames", summary)
 
+    def test_realsense_motion_isolation_zero_frames_is_d455_imu_failure(self) -> None:
+        code, status, check, summary, _ = Doctor.classify_realsense_single_stream_result(
+            "motion",
+            {"gyro": 0, "accel": 0, "timeouts": 0},
+            seconds=5,
+            fps=15,
+        )
+        self.assertEqual((code, status, check), ("2.1", "FAIL", "realsense_motion_stream_isolation"))
+        self.assertIn("no usable IMU frames", summary)
+
     def test_realsense_color_isolation_passes(self) -> None:
         code, status, check, _, _ = Doctor.classify_realsense_single_stream_result(
             "color",
@@ -546,6 +609,34 @@ class RobotDoctorParserTests(unittest.TestCase):
             motion=True,
         )
         self.assertEqual((code, status, check), ("3.2", "PASS", "realsense_stream_test"))
+
+    def test_viewer_passes_ros2_fails_named_failure_class(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = build_parser().parse_args(["agvtest", "--output-root", tmp, "--ros", "ros2"])
+            doctor = Doctor(args)
+            doctor.ros_mode = "ros2"
+            doctor.topic_types = {"/scan": "sensor_msgs/msg/LaserScan"}
+            doctor.results.append(CheckResult("3.2", "PASS", "realsense_stream_test", "standalone ok"))
+            doctor.check_realsense_ros2_failure_class()
+            matches = [item for item in doctor.results if item.check == "viewer_passes_ros2_fails"]
+            self.assertEqual((matches[-1].code, matches[-1].status), ("2.1", "FAIL"))
+            self.assertIn("ROS2 camera image topics are absent", matches[-1].summary)
+
+    def test_d455_infra_fps_cap_detects_15hz_cap_when_higher_fps_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = build_parser().parse_args(["agvtest", "--output-root", tmp, "--ros", "ros2", "--camera-fps", "30"])
+
+            class FakeDoctor(Doctor):
+                def measure_topic_rate(self, topic: str, seconds: int) -> Optional[float]:
+                    return 15.0
+
+            doctor = FakeDoctor(args)
+            doctor.ros_mode = "ros2"
+            doctor.topic_types = {"/camera/infra1/image_rect_raw": "sensor_msgs/msg/Image"}
+            doctor.check_d455_infra_fps_cap()
+            matches = [item for item in doctor.results if item.check == "d455_infra_fps_cap"]
+            self.assertEqual((matches[-1].code, matches[-1].status), ("2.2", "FAIL"))
+            self.assertIn("depth_module.enable_auto_exposure", matches[-1].next_action)
 
 
 class RobotDoctorDecisionTests(unittest.TestCase):
@@ -1062,6 +1153,65 @@ class DatasetRunAuditTests(unittest.TestCase):
             self.assertFalse([item for item in items if item.status == "FAIL"])
             self.assertTrue(any(item.check == "manifest_complete" for item in items))
 
+    def test_dataset_run_audit_rejects_report_manifest_robot_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_dir = root / "report"
+            report_dir.mkdir()
+            report = make_report([CheckResult("3.1", "PASS", "disk_free", "ok")], profile="dataset")
+            report["robot_id"] = "agv100"
+            report["output_dir"] = str(report_dir)
+            summary = report_dir / "summary.json"
+            summary.write_text(json.dumps(report) + "\n")
+
+            bag = root / "agv101_square_20260627_120000.bag"
+            bag.write_bytes(b"placeholder")
+            manifest = root / "agv101_square_20260627_120000_manifest.yaml"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "session_id: agv101_square_20260627_120000",
+                        "robot_id: agv101",
+                        "scenario: square",
+                        "date: 2026-06-27",
+                        "time_start: '12:00:00'",
+                        "time_end: '12:01:00'",
+                        "bag_file: agv101_square_20260627_120000.bag",
+                        "duration_sec: 60",
+                        "bag_size_mb: 1",
+                    ]
+                )
+            )
+            items = audit_artifact_consistency([summary], [bag], [manifest])
+            failures = [item for item in items if item.status == "FAIL"]
+            self.assertTrue(any(item.check == "robot_artifact_match" for item in failures), items)
+
+    def test_dataset_run_audit_rejects_unmatched_bag_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bag = root / "agv100_other_20260627_120000.bag"
+            bag.write_bytes(b"placeholder")
+            manifest = root / "agv100_square_20260627_120000_manifest.yaml"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "session_id: agv100_square_20260627_120000",
+                        "robot_id: agv100",
+                        "scenario: square",
+                        "date: 2026-06-27",
+                        "time_start: '12:00:00'",
+                        "time_end: '12:01:00'",
+                        "bag_file: agv100_square_20260627_120000.bag",
+                        "duration_sec: 60",
+                        "bag_size_mb: 1",
+                    ]
+                )
+            )
+            items = audit_artifact_consistency([], [bag], [manifest])
+            failures = [item for item in items if item.status == "FAIL"]
+            self.assertTrue(any(item.check == "manifest_bag_supplied" for item in failures), items)
+            self.assertTrue(any(item.check == "bag_manifest_match" for item in failures), items)
+
 
 class FleetDoctorSummaryTests(unittest.TestCase):
     def test_shell_wrappers_are_syntax_valid(self) -> None:
@@ -1103,6 +1253,7 @@ class FleetDoctorSummaryTests(unittest.TestCase):
             report_dir = tmp_path / "report"
             report_dir.mkdir()
             report = make_report([CheckResult("3.1", "PASS", "disk_free", "ok")], profile="dataset")
+            report["robot_id"] = "agv100"
             report["loaded_config"] = {"gate_id": "test_gate", "gate_version": "1.0.0"}
             report["config_sha256"] = "a" * 64
             report["output_dir"] = str(report_dir)

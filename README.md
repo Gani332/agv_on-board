@@ -172,6 +172,10 @@ python3 scripts/diagnostics/dataset_run_audit.py \
   --strict
 ```
 
+This is the final publishability gate: it validates report evidence, bag
+rates/gaps, manifest completion, and that the copied report/bag/manifest
+artifacts belong to the same robot, scenario, and session identity.
+
 For a lab host list, the equivalent remote wrapper form is:
 
 ```bash
@@ -384,10 +388,11 @@ scripts/diagnostics/robot_doctor_selftest.py No-hardware regression tests for di
 scripts/diagnostics/run_fleet_doctor_remote.sh Deploy/run diagnostics across a host list
 scripts/diagnostics/run_robot_doctor_remote.sh Deploy/run diagnostics on a robot over SSH
 scripts/diagnostics/validate_robot_doctor_report.py Validate summary.json consistency
+docs/ROBOT_DEBUG_PIPELINE_COVERAGE_AUDIT.md Answered coverage audit for D455/ROS2/Chrony gaps
 scripts/setup_robot_ros2.sh                ROS 2 robot provisioning with RealSense/tooling gate
 scripts/logging/start_session.sh           One-command bringup + rosbag + manifest
 scripts/logging/validate_bag.py            Full post-run publishability check
-scripts/logging/validate_ros2_bag.py       ROS 2 rosbag2/.db3 publishability check
+scripts/logging/validate_ros2_bag.py       ROS 2 rosbag2 .db3/.mcap publishability check
 scripts/logging/audit_bag_fast.py          Fast topic/rate/gap/sync audit
 scripts/logging/drive_straight.py          Odom-bounded straight-line dataset helper
 scripts/logging/drive_mocap_straight.py    OptiTrack mocap-feedback straight-line helper
@@ -696,7 +701,7 @@ For each robot:
 5. Fix any `FAIL`; resolve or explicitly document every `WARN`.
 6. If D455 physical-path failures persist after USB reset, complete the camera/cable/host-port A/B swap checklist.
 7. Record with `bash scripts/logging/start_session.sh <robot_name> <scenario>`.
-8. Keep robot bags, manifests, and `robot_doctor` summaries with the same robot/scenario/timestamp convention.
+8. Keep robot bags, manifests, and `robot_doctor` summaries with the same robot/scenario/timestamp convention; `dataset_run_audit.py` fails mismatched artifact sets.
 9. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.
 
 Offline Swarm-SLAM analysis wrappers live in `scripts/swarmslam/`. The upstream

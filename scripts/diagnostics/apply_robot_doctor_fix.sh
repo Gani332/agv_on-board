@@ -139,7 +139,9 @@ fix_d455_autosuspend() {
 
     rule_file="/etc/udev/rules.d/99-realsense-d455-power.rules"
     rule_content='ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b5c", TEST=="power/control", ATTR{power/control}:="on"
-ACTION=="change", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b5c", TEST=="power/control", ATTR{power/control}:="on"'
+ACTION=="change", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b5c", TEST=="power/control", ATTR{power/control}:="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b5c", TEST=="power/autosuspend_delay_ms", ATTR{power/autosuspend_delay_ms}:="-1"
+ACTION=="change", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b5c", TEST=="power/autosuspend_delay_ms", ATTR{power/autosuspend_delay_ms}:="-1"'
 
     if [ "${APPLY}" = true ]; then
         sudo_write_file "${rule_file}" 0644 "${rule_content}"
@@ -156,6 +158,13 @@ ACTION=="change", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b
             log "D455 ${d} power/control=${current:-unknown}"
         else
             log "D455 ${d} has no power/control file; skipping live power policy update"
+        fi
+        if [ -f "${d}/power/autosuspend_delay_ms" ]; then
+            sudo_write_sysfs "${d}/power/autosuspend_delay_ms" "-1"
+            delay="$(cat "${d}/power/autosuspend_delay_ms" 2>/dev/null || true)"
+            log "D455 ${d} power/autosuspend_delay_ms=${delay:-unknown}"
+        else
+            log "D455 ${d} has no power/autosuspend_delay_ms file; skipping live delay update"
         fi
     done
 
@@ -273,6 +282,10 @@ PY
             if [ -f "${d}/power/control" ]; then
                 sudo_write_sysfs "${d}/power/control" "on"
                 log "D455 ${d} power/control=$(cat "${d}/power/control" 2>/dev/null || true)"
+            fi
+            if [ -f "${d}/power/autosuspend_delay_ms" ]; then
+                sudo_write_sysfs "${d}/power/autosuspend_delay_ms" "-1"
+                log "D455 ${d} power/autosuspend_delay_ms=$(cat "${d}/power/autosuspend_delay_ms" 2>/dev/null || true)"
             fi
         done
     fi

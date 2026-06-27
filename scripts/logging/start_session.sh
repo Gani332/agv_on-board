@@ -350,6 +350,22 @@ finalise_manifest() {
     sed -i "s/bag_size_mb: ~/bag_size_mb: ${BAG_SIZE_MB:-unknown}/" "${MANIFEST_FILE}"
     sed -i "s/duration_sec: ~/duration_sec: ${DURATION}/" "${MANIFEST_FILE}"
 
+    {
+        echo ""
+        echo "# Post-run chrony snapshot for ${SESSION_ID}"
+        echo "# Captured: $(date --iso-8601=ns)"
+        echo ""
+        if command -v chronyc >/dev/null 2>&1; then
+            echo "## chronyc tracking"
+            chronyc tracking 2>&1 || true
+            echo ""
+            echo "## chronyc sources -v"
+            chronyc sources -v 2>&1 || true
+        else
+            echo "chronyc not installed"
+        fi
+    } >> "${CHRONY_FILE}"
+
     echo "Duration: ${DURATION}s"
     echo "Bag size: ${BAG_SIZE_MB:-unknown} MB"
     echo "Manifest written: ${MANIFEST_FILE}"

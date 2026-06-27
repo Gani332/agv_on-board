@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -32,6 +33,7 @@ from validate_robot_doctor_report import validate_report  # noqa: E402
 PASS = "PASS"
 WARN = "WARN"
 FAIL = "FAIL"
+MANIFEST_REQUIRED_KEYS = ["session_id", "robot_id", "scenario", "date", "time_start", "time_end", "bag_file", "duration_sec", "bag_size_mb"]
 
 
 @dataclass
@@ -334,6 +336,15 @@ def incomplete(value: str) -> bool:
     return value in {"", "~", "unknown", "null", "None"}
 
 
+def manifest_complete(data: Dict[str, str]) -> bool:
+    if any(incomplete(data.get(key, "")) for key in MANIFEST_REQUIRED_KEYS):
+        return False
+    try:
+        return float(data["duration_sec"]) > 0
+    except Exception:
+        return False
+
+
 def audit_manifests(paths: Sequence[Path], require_manifest: bool) -> List[AuditItem]:
     items: List[AuditItem] = []
     if not paths:
@@ -349,14 +360,13 @@ def audit_manifests(paths: Sequence[Path], require_manifest: bool) -> List[Audit
         )
         return items
 
-    required_keys = ["session_id", "robot_id", "scenario", "date", "time_start", "time_end", "bag_file", "duration_sec", "bag_size_mb"]
     for path in paths:
         try:
             data = parse_manifest(path)
         except Exception as exc:
             items.append(AuditItem(FAIL, "manifest_read", str(path), f"cannot read manifest: {exc}", "copy the complete manifest again"))
             continue
-        missing = [key for key in required_keys if incomplete(data.get(key, ""))]
+        missing = [key for key in MANIFEST_REQUIRED_KEYS if incomplete(data.get(key, ""))]
         if missing:
             items.append(
                 AuditItem(
@@ -390,6 +400,154 @@ def audit_manifests(paths: Sequence[Path], require_manifest: bool) -> List[Audit
                     "verify the bag was copied with the manifest or pass the bag explicitly with --bag",
                 )
             )
+    return items
+
+
+def artifact_keys(path: Path) -> set[str]:
+    """Return names that can identify a bag artifact across ROS1/ROS2 layouts."""
+    keys = {path.name}
+    if path.suffix:
+        keys.add(path.stem)
+    chunk_match = re.match(r"(.+)_\d+$", path.stem)
+    if path.suffix == ".db3" and chunk_match:
+        keys.add(chunk_match.group(1))
+    if path.is_file() and path.parent.name and path.parent != Path("."):
+        keys.add(path.parent.name)
+    if path.is_dir():
+        keys.add(path.name)
+        for child in path.glob("*.db3"):
+            keys.update(artifact_keys(child))
+    return {key for key in keys if key and key != "."}
+
+
+def manifest_bag_keys(data: Dict[str, str]) -> set[str]:
+    keys = artifact_keys(Path(data.get("bag_file", "")))
+    session_id = data.get("session_id", "")
+    if session_id:
+        keys.update(artifact_keys(Path(session_id)))
+        keys.add(f"{session_id}.bag")
+    return keys
+
+
+def load_complete_manifests(paths: Sequence[Path]) -> List[Tuple[Path, Dict[str, str]]]:
+    records: List[Tuple[Path, Dict[str, str]]] = []
+    for path in paths:
+        try:
+            data = parse_manifest(path)
+        except Exception:
+            continue
+        if manifest_complete(data):
+            records.append((path, data))
+    return records
+
+
+def load_report_robot_ids(paths: Sequence[Path]) -> Dict[Path, str]:
+    robot_ids: Dict[Path, str] = {}
+    for raw_path in paths:
+        path = raw_path / "summary.json" if raw_path.is_dir() else raw_path
+        report, error = load_report(path)
+        if error or report is None:
+            continue
+        robot_id = str(report.get("robot_id", "")).strip()
+        if robot_id:
+            robot_ids[path] = robot_id
+    return robot_ids
+
+
+def audit_artifact_consistency(report_paths: Sequence[Path], bag_paths: Sequence[Path], manifest_paths: Sequence[Path]) -> List[AuditItem]:
+    items: List[AuditItem] = []
+    reports = load_report_robot_ids(report_paths)
+    manifests = load_complete_manifests(manifest_paths)
+    manifest_ids = {data["robot_id"] for _, data in manifests}
+    report_ids = set(reports.values())
+
+    if report_ids and manifest_ids:
+        missing_manifests = sorted(report_ids - manifest_ids)
+        missing_reports = sorted(manifest_ids - report_ids)
+        if missing_manifests or missing_reports:
+            items.append(
+                AuditItem(
+                    FAIL,
+                    "robot_artifact_match",
+                    ",".join(str(path) for path in list(report_paths) + list(manifest_paths)),
+                    f"missing manifests for reports={missing_manifests}; missing reports for manifests={missing_reports}",
+                    "audit the matching report, bag, and manifest set for the same robots only",
+                )
+            )
+        else:
+            items.append(AuditItem(PASS, "robot_artifact_match", ",".join(sorted(report_ids)), "reports and manifests cover the same robots"))
+
+    if manifests:
+        session_counts: Dict[str, int] = {}
+        scenarios = set()
+        for _, data in manifests:
+            session_counts[data["session_id"]] = session_counts.get(data["session_id"], 0) + 1
+            scenarios.add(data["scenario"])
+        duplicates = sorted(session_id for session_id, count in session_counts.items() if count > 1)
+        if duplicates:
+            items.append(
+                AuditItem(
+                    FAIL,
+                    "manifest_unique_session",
+                    ",".join(str(path) for path, _ in manifests),
+                    "duplicate session_id values: " + ", ".join(duplicates),
+                    "keep exactly one manifest per robot/session in a dataset audit",
+                )
+            )
+        else:
+            items.append(AuditItem(PASS, "manifest_unique_session", ",".join(str(path) for path, _ in manifests), "manifest session IDs are unique"))
+
+        if len(scenarios) > 1:
+            items.append(
+                AuditItem(
+                    FAIL,
+                    "fleet_same_scenario",
+                    ",".join(str(path) for path, _ in manifests),
+                    "mixed scenarios in one audit: " + ", ".join(sorted(scenarios)),
+                    "audit one scenario/run at a time so reports, bags, and manifests remain comparable",
+                )
+            )
+        else:
+            items.append(AuditItem(PASS, "fleet_same_scenario", ",".join(sorted(scenarios)), "all manifests describe the same scenario"))
+
+    if manifests and bag_paths:
+        bag_key_by_path = {path: artifact_keys(path) for path in bag_paths}
+        supplied_keys = set().union(*bag_key_by_path.values()) if bag_key_by_path else set()
+        manifest_keys_by_path = {path: manifest_bag_keys(data) for path, data in manifests}
+        manifest_keys = set().union(*manifest_keys_by_path.values()) if manifest_keys_by_path else set()
+
+        unmatched_manifests = [
+            f"{path.name}:{data['bag_file']}"
+            for path, data in manifests
+            if not (manifest_keys_by_path[path] & supplied_keys)
+        ]
+        if unmatched_manifests:
+            items.append(
+                AuditItem(
+                    FAIL,
+                    "manifest_bag_supplied",
+                    ",".join(unmatched_manifests),
+                    "manifest bag_file/session_id does not match any supplied bag artifact",
+                    "copy the matching bag for each manifest, or remove stale manifests from this audit",
+                )
+            )
+        else:
+            items.append(AuditItem(PASS, "manifest_bag_supplied", ",".join(str(path) for path in manifest_paths), "every manifest matches a supplied bag artifact"))
+
+        unmatched_bags = [str(path) for path, keys in bag_key_by_path.items() if not (keys & manifest_keys)]
+        if unmatched_bags:
+            items.append(
+                AuditItem(
+                    FAIL,
+                    "bag_manifest_match",
+                    ",".join(unmatched_bags),
+                    "supplied bag artifact is not referenced by any manifest",
+                    "audit the manifest generated with each supplied bag",
+                )
+            )
+        else:
+            items.append(AuditItem(PASS, "bag_manifest_match", ",".join(str(path) for path in bag_paths), "every supplied bag is referenced by a manifest"))
+
     return items
 
 
@@ -440,6 +598,7 @@ def main() -> int:
         )
     )
     items.extend(audit_manifests(manifest_paths, require_manifest=not args.no_require_manifest))
+    items.extend(audit_artifact_consistency(report_paths, bag_paths, manifest_paths))
 
     print_table(items)
     counts = {PASS: 0, WARN: 0, FAIL: 0}

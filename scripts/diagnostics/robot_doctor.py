@@ -104,6 +104,8 @@ UVC_PATTERNS = [
 
 XHCI_PATTERNS = [
     r"xhci.*(?:timeout|error|reset|stopped)",
+    r"xHCI not responding to stop endpoint command",
+    r"CLEAR_HALT for active endpoint",
     r"usb .*device descriptor read.*error",
 ]
 
@@ -116,17 +118,38 @@ USB_DISCONNECT_PATTERNS = [
     r"device not accepting address",
 ]
 
+USB_AUTOSUSPEND_PATTERNS = [
+    r"tegra-xusb.*entering ELPG",
+    r"usb_suspend_both.*status 0",
+]
+
+USB2_FALLBACK_PATTERNS = [
+    r"new high-speed USB device",
+]
+
+USB_OVERCURRENT_PATTERNS = [
+    r"System throttled due to over-current",
+    r"over-current",
+    r"overcurrent",
+]
+
 D455_PHYSICAL_FAILURE_CHECKS = {
     "d455_enumeration",
+    "d455_imu_hid",
     "d455_usb_speed",
+    "d455_usb_autosuspend",
+    "d455_usb_autosuspend_delay",
     "d455_uvc_binding",
     "d455_rs_enumerate",
     "kernel_uvc_errors",
     "kernel_xhci_errors",
+    "kernel_usb_autosuspend_elpg",
+    "kernel_usb_overcurrent",
     "kernel_usb_disconnect",
     "realsense_control_query",
     "realsense_color_stream",
     "realsense_depth_stream",
+    "realsense_motion_stream_gate",
     "realsense_motion_stream_isolation",
     "realsense_stream_exception",
     "realsense_stream_no_frames",
@@ -160,9 +183,11 @@ CONFIG_FLAG_MAP = {
     "strict_versions": ["--strict-versions"],
     "stream_test_seconds": ["--stream-test-seconds"],
     "stream_test_motion": ["--stream-test-motion"],
+    "d455_motion_test_seconds": ["--d455-motion-test-seconds"],
     "camera_width": ["--camera-width"],
     "camera_height": ["--camera-height"],
     "camera_fps": ["--camera-fps"],
+    "max_clock_offset_ms": ["--max-clock-offset-ms"],
     "strict_ops": ["--strict-ops"],
     "confirm_mechanical": ["--confirm-mechanical"],
     "confirm_mocap": ["--confirm-mocap"],
@@ -622,6 +647,13 @@ class Doctor:
                 [result.log],
                 "start/repair chrony or NTP before multi-robot dataset collection",
             )
+        chrony = self.run("chrony_tracking_gate", "chronyc tracking 2>&1 || true", timeout=8)
+        status, summary, next_action = self.classify_chrony_tracking(
+            self.command_output(chrony),
+            self.args.max_clock_offset_ms,
+            self.args.profile,
+        )
+        self.add("3.3", status, "chrony_offset", summary, [chrony.log], next_action)
 
     @staticmethod
     def clock_synchronized(text: str) -> bool:
@@ -636,6 +668,54 @@ class Doctor:
         if "SystemClockSynchronized" in values:
             return values["SystemClockSynchronized"] == "yes"
         return False
+
+    @staticmethod
+    def classify_chrony_tracking(text: str, max_offset_ms: float, profile: str) -> Tuple[str, str, str]:
+        if "command not found" in text or "chronyc:" in text and "command not found" in text:
+            status = FAIL if profile == "dataset" else WARN
+            return (
+                status,
+                "chronyc tracking is unavailable",
+                "install/start chrony and rerun before multi-robot dataset collection",
+            )
+        if not text.strip():
+            status = FAIL if profile == "dataset" else WARN
+            return (
+                status,
+                "chrony tracking produced no output",
+                "start chrony and verify NTP server reachability before recording",
+            )
+        leap = re.search(r"Leap status\s*:\s*(.+)", text, flags=re.IGNORECASE)
+        if leap and "normal" not in leap.group(1).lower():
+            status = FAIL if profile == "dataset" else WARN
+            return (
+                status,
+                f"chrony leap status is not normal: {leap.group(1).strip()}",
+                "repair chrony source selection; dataset timestamps are not trustworthy",
+            )
+
+        offsets_sec: List[float] = []
+        for label in ["System time", "Last offset", "RMS offset"]:
+            match = re.search(rf"{re.escape(label)}\s*:\s*([+-]?[0-9.]+)\s+seconds", text, flags=re.IGNORECASE)
+            if match:
+                offsets_sec.append(abs(float(match.group(1))))
+        if not offsets_sec:
+            status = FAIL if profile == "dataset" else WARN
+            return (
+                status,
+                "chrony offset could not be parsed",
+                "capture `chronyc tracking` output and verify offset is below the dataset threshold",
+            )
+
+        max_seen_ms = max(offsets_sec) * 1000.0
+        if max_seen_ms <= max_offset_ms:
+            return (PASS, f"chrony max parsed offset {max_seen_ms:.3f} ms <= {max_offset_ms:.3f} ms", "")
+        status = FAIL if profile == "dataset" else WARN
+        return (
+            status,
+            f"chrony max parsed offset {max_seen_ms:.3f} ms exceeds {max_offset_ms:.3f} ms",
+            "repair NTP/chrony topology and rerun before collecting publishable multi-robot data",
+        )
 
     def check_network(self) -> None:
         ip_result = self.run("network_ping_ip", "ping -c 2 -W 2 8.8.8.8", timeout=8)
@@ -668,6 +748,7 @@ class Doctor:
         self.check_usb_inventory()
         self.check_usb_power_policy()
         self.check_dev_permissions()
+        self.check_d455_imu_hid()
         self.check_realsense()
         self.check_serial_devices()
         self.check_kernel_logs()
@@ -845,14 +926,15 @@ class Doctor:
             "echo speed=$(cat \"$d/speed\" 2>/dev/null || true); "
             "echo power_control=$(cat \"$d/power/control\" 2>/dev/null || true); "
             "echo power_autosuspend=$(cat \"$d/power/autosuspend\" 2>/dev/null || true); "
+            "echo power_autosuspend_delay_ms=$(cat \"$d/power/autosuspend_delay_ms\" 2>/dev/null || true); "
             "done; echo CMDLINE; cat /proc/cmdline 2>/dev/null || true",
             timeout=10,
         )
-        for code, status, check, summary, next_action in self.classify_usb_power_policy(self.command_output(result)):
+        for code, status, check, summary, next_action in self.classify_usb_power_policy(self.command_output(result), self.args.profile):
             self.add(code, status, check, summary, [result.log], next_action)
 
     @staticmethod
-    def classify_usb_power_policy(text: str) -> List[Tuple[str, str, str, str, str]]:
+    def classify_usb_power_policy(text: str, profile: str = "preflight") -> List[Tuple[str, str, str, str, str]]:
         results: List[Tuple[str, str, str, str, str]] = []
         blocks = re.split(r"\n(?=USB_DEVICE=)", text)
         d455_block = ""
@@ -886,6 +968,33 @@ class Doctor:
                     "d455_usb_autosuspend",
                     f"could not determine D455 USB autosuspend state: {control}",
                     "inspect /sys/bus/usb/devices/*/power/control for the D455 and disable autosuspend if uncertain",
+                )
+            )
+
+        delay_match = re.search(r"power_autosuspend_delay_ms=([^\n]+)", d455_block)
+        delay = delay_match.group(1).strip() if delay_match else "unknown"
+        if delay == "-1":
+            results.append(("1.2", PASS, "d455_usb_autosuspend_delay", "D455 autosuspend_delay_ms=-1", ""))
+        elif delay in {"", "unknown"}:
+            status = FAIL if profile == "dataset" else WARN
+            results.append(
+                (
+                    "1.2",
+                    status,
+                    "d455_usb_autosuspend_delay",
+                    "D455 autosuspend_delay_ms could not be read",
+                    "read /sys/bus/usb/devices/<D455>/power/autosuspend_delay_ms and persist -1 with the autosuspend fix",
+                )
+            )
+        else:
+            status = FAIL if profile == "dataset" else WARN
+            results.append(
+                (
+                    "1.2",
+                    status,
+                    "d455_usb_autosuspend_delay",
+                    f"D455 autosuspend_delay_ms={delay}, expected -1",
+                    "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-autosuspend, then power-cycle and rerun",
                 )
             )
 
@@ -983,6 +1092,37 @@ class Doctor:
             )
         else:
             self.add("2.1", PASS, "device_permissions", "device permissions look usable", [result.log])
+
+    def check_d455_imu_hid(self) -> None:
+        if not self.args.expect_camera:
+            self.add("1.1", INFO, "d455_imu_hid", "camera not expected; D455 IMU HID gate skipped")
+            return
+        result = self.run(
+            "d455_imu_hid",
+            "for h in /sys/class/hidraw/hidraw*; do "
+            "[ -e \"$h\" ] || continue; "
+            "dev=/dev/$(basename \"$h\"); "
+            "echo HIDRAW=$dev; "
+            "ls -l \"$dev\" 2>/dev/null || true; "
+            "udevadm info -q property -n \"$dev\" 2>/dev/null | "
+            "grep -E '^(ID_VENDOR_ID|ID_MODEL_ID|ID_VENDOR=|ID_MODEL=|HID_ID|HID_NAME)=' || true; "
+            "done",
+            timeout=10,
+        )
+        text = self.command_output(result)
+        d455_hid = bool(re.search(r"(ID_VENDOR_ID=8086|HID_ID=.*00008086|RealSense|D455|Intel)", text, flags=re.IGNORECASE))
+        if d455_hid:
+            self.add("1.1", PASS, "d455_imu_hid", "D455/Intel HID raw IMU path is visible", [result.log])
+            return
+        status = FAIL if self.args.require_imu else WARN
+        self.add(
+            "1.1",
+            status,
+            "d455_imu_hid",
+            "D455 IMU HID/hidraw path is not visible",
+            [result.log],
+            "replug/reset D455, verify hidraw udev permissions, then run the standalone motion stream gate",
+        )
 
     def check_realsense(self) -> None:
         if not self.args.expect_camera:
@@ -1492,6 +1632,9 @@ class Doctor:
         xhci = self.match_patterns(text, XHCI_PATTERNS)
         reset_events = self.match_patterns(text, USB_RESET_EVENT_PATTERNS)
         disconnect = self.match_patterns(text, USB_DISCONNECT_PATTERNS)
+        autosuspend = self.match_patterns(text, USB_AUTOSUSPEND_PATTERNS)
+        usb2_fallback = self.match_patterns(text, USB2_FALLBACK_PATTERNS)
+        overcurrent = self.match_patterns(text, USB_OVERCURRENT_PATTERNS)
         if uvc:
             self.add(
                 "2.1",
@@ -1538,6 +1681,42 @@ class Doctor:
             )
         else:
             self.add("1.2", PASS, "kernel_usb_disconnect", "no USB disconnect patterns found", [result.log])
+
+        if autosuspend:
+            self.add(
+                "1.2",
+                FAIL,
+                "kernel_usb_autosuspend_elpg",
+                f"autosuspend/ELPG evidence found: {autosuspend[0][:160]}",
+                [result.log],
+                "disable D455 autosuspend, power-cycle, and rerun the standalone stream gate",
+            )
+        else:
+            self.add("1.2", PASS, "kernel_usb_autosuspend_elpg", "no autosuspend/ELPG kernel patterns found", [result.log])
+
+        if usb2_fallback:
+            self.add(
+                "1.2",
+                WARN,
+                "kernel_usb2_fallback",
+                f"high-speed USB enumeration observed: {usb2_fallback[0][:160]}",
+                [result.log],
+                "if this line belongs to the D455, swap cable/port until lsusb reports 5000 Mb/s",
+            )
+        else:
+            self.add("1.2", PASS, "kernel_usb2_fallback", "no high-speed USB fallback patterns found", [result.log])
+
+        if overcurrent:
+            self.add(
+                "1.2",
+                FAIL,
+                "kernel_usb_overcurrent",
+                f"USB overcurrent/throttle evidence found: {overcurrent[0][:160]}",
+                [result.log],
+                "reduce USB load, improve power delivery, or use a powered hub before dataset collection",
+            )
+        else:
+            self.add("1.2", PASS, "kernel_usb_overcurrent", "no USB overcurrent patterns found", [result.log])
 
     @staticmethod
     def match_patterns(text: str, patterns: Sequence[str]) -> List[str]:
@@ -1665,6 +1844,7 @@ class Doctor:
     def run_realsense_stream_test(self) -> None:
         if self.args.stream_test_seconds <= 0:
             self.add("3.2", INFO, "realsense_stream_test", "standalone stream test skipped")
+            self.run_d455_motion_stream_gate()
             return
         seconds = int(self.args.stream_test_seconds)
         color_width = int(os.environ.get("CAMERA_COLOR_WIDTH", self.args.camera_width))
@@ -1699,6 +1879,7 @@ class Doctor:
             self.add(code, status, check, summary, evidence, next_action)
             if status == FAIL:
                 self.run_realsense_isolation_tests(min(5, seconds), color_width, color_height, fps)
+            self.run_d455_motion_stream_gate()
             return
         code, status, check, summary, next_action = self.classify_realsense_stream_result(
             data,
@@ -1709,6 +1890,42 @@ class Doctor:
         self.add(code, status, check, summary, evidence, next_action)
         if status == FAIL:
             self.run_realsense_isolation_tests(min(5, seconds), color_width, color_height, fps)
+        self.run_d455_motion_stream_gate()
+
+    def run_d455_motion_stream_gate(self) -> None:
+        seconds = int(self.args.d455_motion_test_seconds)
+        if seconds <= 0 or not (self.args.require_imu or self.args.stream_test_motion):
+            self.add("1.1", INFO, "realsense_motion_stream_gate", "standalone D455 motion gate skipped")
+            return
+        probe = self.build_realsense_probe(
+            mode="motion",
+            seconds=seconds,
+            width=int(os.environ.get("CAMERA_COLOR_WIDTH", self.args.camera_width)),
+            height=int(os.environ.get("CAMERA_COLOR_HEIGHT", self.args.camera_height)),
+            fps=int(os.environ.get("CAMERA_COLOR_FPS", self.args.camera_fps)),
+        )
+        result = self.run("realsense_motion_stream_gate", probe, timeout=seconds + 15)
+        data = self.parse_last_json(self.command_output(result))
+        if not data:
+            self.add(
+                "1.1",
+                FAIL,
+                "realsense_motion_stream_gate",
+                "standalone D455 motion/IMU probe produced no parseable result",
+                [result.log],
+                "check D455 HID/hidraw path and rerun after USB reset; if repeatable, use camera/cable/port A/B evidence",
+            )
+            return
+        code, status, check, summary, next_action = self.classify_realsense_single_stream_result(
+            "motion",
+            data,
+            seconds,
+            int(os.environ.get("CAMERA_COLOR_FPS", self.args.camera_fps)),
+        )
+        if status == PASS:
+            code = "1.1"
+            check = "realsense_motion_stream_gate"
+        self.add(code, status, check, summary, [result.log], next_action)
 
     @staticmethod
     def build_realsense_probe(
@@ -2046,6 +2263,8 @@ PY
             self.check_dataset_bringup_context()
             self.check_realsense_ros_runtime_versions()
             self.check_required_live_topics()
+            self.check_realsense_ros2_failure_class()
+            self.check_d455_infra_fps_cap()
             self.check_mocap_live()
             self.check_imu_live()
             self.check_stale_ros_processes()
@@ -2156,6 +2375,100 @@ PY
                 )
             else:
                 self.add("2.3", PASS, "topic_rate", f"{topic} {rate:.1f} Hz")
+
+    def check_realsense_ros2_failure_class(self) -> None:
+        if not self.args.expect_camera:
+            return
+        if self.ros_mode != "ros2":
+            self.add("2.1", INFO, "viewer_passes_ros2_fails", "ROS2-specific RealSense consistency check skipped outside ROS2")
+            return
+
+        standalone_ok = any(
+            item.status == PASS
+            and item.check in {
+                "realsense_stream_test",
+                "realsense_color_stream",
+                "realsense_depth_stream",
+            }
+            for item in self.results
+        )
+        camera_topics = [
+            "/camera/color/image_raw",
+            "/camera/aligned_depth_to_color/image_raw",
+            "/camera/depth/image_rect_raw",
+        ]
+        present = [topic for topic in camera_topics if topic in self.topic_types]
+        if standalone_ok and not present:
+            self.add(
+                "2.1",
+                FAIL,
+                "viewer_passes_ros2_fails",
+                "standalone RealSense stream passes, but ROS2 camera image topics are absent",
+                next_action="treat as ROS2 wrapper/udev/version/launch issue: check realsense2_camera logs, udev rules, wrapper version, and LibRealSense runtime",
+            )
+        elif standalone_ok:
+            self.add(
+                "2.1",
+                PASS,
+                "viewer_passes_ros2_fails",
+                "standalone RealSense path and ROS2 camera topics are both visible",
+            )
+        else:
+            self.add(
+                "2.1",
+                INFO,
+                "viewer_passes_ros2_fails",
+                "standalone RealSense path did not pass, so ROS2-only failure class is not applicable",
+            )
+
+    def check_d455_infra_fps_cap(self) -> None:
+        if self.ros_mode != "ros2" or not self.args.expect_camera:
+            return
+        try:
+            expected_fps = float(self.args.camera_fps)
+        except Exception:
+            expected_fps = 0.0
+        infra_topics = [
+            topic
+            for topic in self.topic_types
+            if "infra" in topic and ("image" in topic or topic.endswith("/image_rect_raw"))
+        ]
+        if expected_fps <= 15.0:
+            self.add(
+                "2.2",
+                PASS,
+                "d455_infra_fps_cap",
+                f"configured camera FPS is {expected_fps:.1f}; known 15 FPS infra cap is not limiting this gate",
+            )
+            return
+        if not infra_topics:
+            self.add(
+                "2.2",
+                INFO,
+                "d455_infra_fps_cap",
+                "no D455 infra image topics are active; RGB-D gate cannot observe the infra cap",
+            )
+            return
+        topic = infra_topics[0]
+        rate = self.measure_topic_rate(topic, min(10, int(self.args.live_seconds))) if self.args.live_seconds > 0 else None
+        if rate is None:
+            self.add(
+                "2.2",
+                WARN,
+                "d455_infra_fps_cap",
+                f"{topic} present but infra rate could not be measured",
+                next_action="rerun with positive --live-seconds or inspect RealSense ROS diagnostics",
+            )
+        elif rate <= 16.0:
+            self.add(
+                "2.2",
+                FAIL,
+                "d455_infra_fps_cap",
+                f"{topic} measured {rate:.1f} Hz while requested FPS is {expected_fps:.1f}",
+                next_action="apply `ros2 param set /camera/camera depth_module.enable_auto_exposure true`, restart camera node, and rerun the gate",
+            )
+        else:
+            self.add("2.2", PASS, "d455_infra_fps_cap", f"{topic} measured {rate:.1f} Hz")
 
     def measure_topic_rate(self, topic: str, seconds: int) -> Optional[float]:
         if self.ros_mode == "ros2":
@@ -2562,9 +2875,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strict-versions", action="store_true", default=env_bool("STRICT_VERSIONS"))
     parser.add_argument("--stream-test-seconds", type=int, default=0)
     parser.add_argument("--stream-test-motion", action="store_true", help="also request accel/gyro in standalone stream probe")
+    parser.add_argument(
+        "--d455-motion-test-seconds",
+        type=int,
+        default=int(os.environ.get("D455_MOTION_TEST_SECONDS", "10")),
+        help="seconds for the standalone D455 motion-only IMU gate when IMU is required",
+    )
     parser.add_argument("--camera-width", default=os.environ.get("CAMERA_COLOR_WIDTH", "640"))
     parser.add_argument("--camera-height", default=os.environ.get("CAMERA_COLOR_HEIGHT", "480"))
     parser.add_argument("--camera-fps", default=os.environ.get("CAMERA_COLOR_FPS", "15"))
+    parser.add_argument(
+        "--max-clock-offset-ms",
+        type=float,
+        default=float(os.environ.get("MAX_CLOCK_OFFSET_MS", "1.0")),
+        help="maximum allowed absolute chrony offset for dataset clock sync",
+    )
     parser.add_argument("--strict-ops", action="store_true", help="make manual ops confirmations hard gates")
     parser.add_argument("--confirm-mechanical", action="store_true")
     parser.add_argument("--confirm-mocap", action="store_true")

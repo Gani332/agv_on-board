@@ -80,6 +80,7 @@ class Audit:
             "scripts/logging/validate_ros2_bag.py",
             "configs/robot_doctor_dataset_gate.json",
             "docs/ROBOT_DIAGNOSTIC_PIPELINE.md",
+            "docs/ROBOT_DEBUG_PIPELINE_COVERAGE_AUDIT.md",
             "robot_failure_modes_v3.png",
         ]
         missing = [path for path in files if not self.path(path).exists()]
@@ -142,8 +143,15 @@ class Audit:
             "scripts/diagnostics/synthesize_robot_doctor_failure.py",
         ]
         required_by_branch = {
-            "1.1": ["d455_enumeration", "d455_firmware", "serial_devices"],
-            "1.2": ["power_throttle", "kernel_usb_disconnect", "d455_physical_swap_evidence"],
+            "1.1": ["d455_enumeration", "d455_firmware", "d455_imu_hid", "realsense_motion_stream_gate", "serial_devices"],
+            "1.2": [
+                "power_throttle",
+                "d455_usb_autosuspend_delay",
+                "kernel_usb_autosuspend_elpg",
+                "kernel_usb_overcurrent",
+                "kernel_usb_disconnect",
+                "d455_physical_swap_evidence",
+            ],
             "1.3": ["mechanical_operator_check"],
             "2.1": [
                 "d455_usb_speed",
@@ -152,17 +160,19 @@ class Audit:
                 "kernel_uvc_errors",
                 "kernel_xhci_errors",
                 "realsense_stream_transport",
+                "viewer_passes_ros2_fails",
             ],
             "2.2": [
                 "realsense_tools",
                 "librealsense_version",
                 "realsense_ros_driver_version",
+                "d455_infra_fps_cap",
                 "dataset_bringup_context",
             ],
             "2.3": ["topic_present", "topic_rate", "ros_graph_skipped"],
             "3.1": ["disk_free"],
             "3.2": ["bag_validation", "bag_validation_missing", "realsense_stream_test", "robot_doctor_execution", "diagnostic_lock"],
-            "3.3": ["clock_sync", "wifi_management", "mocap_topic", "anchors_operator_check", "remote_ssh_interrupted"],
+            "3.3": ["clock_sync", "chrony_offset", "wifi_management", "mocap_topic", "anchors_operator_check", "remote_ssh_interrupted"],
         }
         for code, patterns in required_by_branch.items():
             self.require_source_patterns(f"branch_{code}_coverage", patterns, files)
@@ -184,6 +194,9 @@ class Audit:
             "expected_librealsense": "2.58.1",
             "expected_realsense_ros_driver": "4.57.7",
             "expected_realsense_ros_librealsense": "2.57.7",
+            "stream_test_motion": True,
+            "d455_motion_test_seconds": 10,
+            "max_clock_offset_ms": 1.0,
         }
         mismatches = [
             f"{key}={config.get(key)!r}"
@@ -272,6 +285,9 @@ class Audit:
                 "report_dataset_ready",
                 "bag_validation",
                 "manifest_complete",
+                "robot_artifact_match",
+                "manifest_bag_supplied",
+                "bag_manifest_match",
                 "fleet_same_gate",
                 "validate_ros2_bag.py",
                 "--mocap-topic",
@@ -293,6 +309,8 @@ class Audit:
                 "REQUIRED_TOPICS",
                 "--require-gt",
                 "--require-imu",
+                "find_mcap_files",
+                "metadata_yaml",
             ],
             ["scripts/logging/validate_ros2_bag.py"],
         )
@@ -322,8 +340,11 @@ class Audit:
                 "diagnostic_lock",
                 "process group",
                 "dataset_run_audit.py",
+                "viewer_passes_ros2_fails",
+                "d455_infra_fps_cap",
+                "chrony_offset",
             ],
-            ["docs/ROBOT_DIAGNOSTIC_PIPELINE.md"],
+            ["docs/ROBOT_DIAGNOSTIC_PIPELINE.md", "docs/ROBOT_DEBUG_PIPELINE_COVERAGE_AUDIT.md"],
         )
         self.require_source_patterns(
             "regression_tests",
@@ -338,6 +359,14 @@ class Audit:
                 "test_realsense_depth_isolation_zero_frames_is_usb_kernel",
                 "test_dataset_run_audit_manifest_complete",
                 "test_dataset_run_audit_reports_missing_fail",
+                "test_dataset_run_audit_rejects_report_manifest_robot_mismatch",
+                "test_dataset_run_audit_rejects_unmatched_bag_and_manifest",
+                "test_chrony_tracking_parser_enforces_sub_ms_gate",
+                "test_realsense_motion_isolation_zero_frames_is_d455_imu_failure",
+                "test_viewer_passes_ros2_fails_named_failure_class",
+                "test_d455_infra_fps_cap_detects_15hz_cap_when_higher_fps_requested",
+                "test_ros2_validator_classifies_mcap_read_failure",
+                "test_ros2_validator_warns_when_metadata_yaml_missing",
             ],
             ["scripts/diagnostics/robot_doctor_selftest.py"],
         )

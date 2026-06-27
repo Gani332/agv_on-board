@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Validate a ROS 2 rosbag2 dataset using only metadata and SQLite timing.
+"""Validate a ROS 2 rosbag2 dataset using metadata plus SQLite/MCAP timing.
 
 This is intentionally dependency-light so it can run on the robot after a
 session. It checks the same publishability surface as the ROS 1 validator:
 required topics, average rates, timestamp gaps, IMU presence, ground truth, and
-bag readability. It does not deserialize messages; rosbag2 SQLite timestamps are
-enough to detect missing streams and frame drop patterns.
+bag readability. It does not deserialize ROS messages; rosbag2 storage
+timestamps are enough to detect missing streams and frame drop patterns.
 """
 
 from __future__ import annotations
@@ -148,6 +148,14 @@ def find_db3_files(path: Path) -> List[Path]:
     return []
 
 
+def find_mcap_files(path: Path) -> List[Path]:
+    if path.is_file() and path.suffix == ".mcap":
+        return [path]
+    if path.is_dir():
+        return sorted(path.glob("*.mcap"))
+    return []
+
+
 def target_hz_for_topic(topic: str) -> float:
     for spec in required_specs():
         if topic in spec.candidates:
@@ -248,6 +256,49 @@ def inspect_ros2_bag(db_paths: Sequence[Path]) -> Dict[str, TopicStats]:
         topic: stats_from_timestamps(topic, type_by_topic.get(topic, ""), timestamps)
         for topic, timestamps in timestamps_by_topic.items()
     }
+
+
+def inspect_mcap_bag(mcap_paths: Sequence[Path]) -> Dict[str, TopicStats]:
+    try:
+        from mcap.reader import make_reader  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"MCAP parser unavailable: {exc}") from exc
+
+    timestamps_by_topic: Dict[str, List[int]] = {}
+    type_by_topic: Dict[str, str] = {}
+    for mcap_path in mcap_paths:
+        with mcap_path.open("rb") as stream:
+            reader = make_reader(stream)
+            for schema, channel, message in reader.iter_messages():
+                topic = channel.topic
+                msg_type = getattr(schema, "name", "") if schema else ""
+                type_by_topic.setdefault(topic, msg_type)
+                timestamps_by_topic.setdefault(topic, []).append(int(message.log_time))
+    return {
+        topic: stats_from_timestamps(topic, type_by_topic.get(topic, ""), timestamps)
+        for topic, timestamps in timestamps_by_topic.items()
+    }
+
+
+def validate_ros2_metadata(path: Path, storage_files: Sequence[Path], results: List[Result]) -> None:
+    if not path.is_dir():
+        record(results, WARN, "metadata_yaml", "bag path is a storage file; metadata.yaml was not checked")
+        return
+    metadata = path / "metadata.yaml"
+    if not metadata.exists():
+        record(results, WARN, "metadata_yaml", "metadata.yaml missing beside ROS2 bag storage files")
+        return
+    try:
+        text = metadata.read_text(errors="replace")
+    except Exception as exc:
+        record(results, FAIL, "metadata_yaml", f"metadata.yaml unreadable: {exc}")
+        return
+    required_tokens = ["duration", "message_count", "topics_with_message_count"]
+    missing = [token for token in required_tokens if token not in text]
+    if missing:
+        record(results, WARN, "metadata_yaml", "metadata.yaml missing expected fields: " + ", ".join(missing))
+    else:
+        record(results, PASS, "metadata_yaml", f"metadata.yaml present for {len(storage_files)} storage file(s)")
 
 
 def choose_topic(stats: Dict[str, TopicStats], candidates: Sequence[str]) -> Optional[TopicStats]:
@@ -494,6 +545,7 @@ def main() -> int:
 
     path = Path(args.bag).expanduser()
     db3_files = find_db3_files(path)
+    mcap_files = find_mcap_files(path)
     results: List[Result] = []
 
     print("=" * 68)
@@ -501,18 +553,33 @@ def main() -> int:
     print(f"Bag: {path}")
     print("=" * 68)
 
-    if not db3_files:
-        record(results, FAIL, "bag_integrity", "no .db3 files found")
+    if not db3_files and not mcap_files:
+        record(results, FAIL, "bag_integrity", "no .db3 or .mcap files found")
         duration_sec = 0.0
         stats: Dict[str, TopicStats] = {}
-    else:
+    elif db3_files:
         for db3 in db3_files:
             try:
                 inspect_sqlite(db3)
                 record(results, PASS, "bag_integrity", f"readable SQLite: {db3.name}")
             except Exception as exc:
                 record(results, FAIL, "bag_integrity", f"{db3.name}: {exc}")
-        stats = inspect_ros2_bag(db3_files)
+        try:
+            stats = inspect_ros2_bag(db3_files)
+        except Exception as exc:
+            record(results, FAIL, "bag_integrity", f"SQLite aggregate read failed: {exc}")
+            stats = {}
+        validate_ros2_metadata(path, db3_files, results)
+        bag_start_ns, bag_end_ns, duration_sec = bag_bounds(stats)
+    else:
+        try:
+            stats = inspect_mcap_bag(mcap_files)
+            for mcap in mcap_files:
+                record(results, PASS, "bag_integrity", f"readable MCAP: {mcap.name}")
+        except Exception as exc:
+            record(results, FAIL, "bag_integrity", str(exc))
+            stats = {}
+        validate_ros2_metadata(path, mcap_files, results)
         bag_start_ns, bag_end_ns, duration_sec = bag_bounds(stats)
 
     print("\n--- Duration ---")
