@@ -158,6 +158,20 @@ python3 scripts/diagnostics/fleet_doctor_summary.py \
   diagnostic_reports/agv*/*/summary.json
 ```
 
+For a completed dataset run, audit copied reports, bags, and manifests together:
+
+```bash
+python3 scripts/diagnostics/dataset_run_audit.py \
+  --report 'diagnostic_reports/agv*/agv*/summary.json' \
+  --bag '/path/to/copied/bags/*' \
+  --manifest '/path/to/copied/manifests/*_manifest.yaml' \
+  --mocap-topic /optitrack/rigid_bodies/<rigid_body_name> \
+  --cmd-topic /<robot_name>/cmd_vel \
+  --require-gt \
+  --require-imu \
+  --strict
+```
+
 For a lab host list, the equivalent remote wrapper form is:
 
 ```bash
@@ -363,6 +377,7 @@ Use these paths for normal robot operation:
 ```text
 scripts/setup_robot.sh                     Build/check workspaces after clone or pull
 scripts/diagnostics/apply_robot_doctor_fix.sh Targeted, dry-run-first remediation for known findings
+scripts/diagnostics/dataset_run_audit.py     Final post-run audit across reports, bags, and manifests
 scripts/diagnostics/robot_doctor.sh        Unified robot readiness/failure-classification gate
 scripts/diagnostics/fleet_doctor_summary.py Compare robot_doctor summaries across a fleet
 scripts/diagnostics/robot_doctor_selftest.py No-hardware regression tests for diagnostics

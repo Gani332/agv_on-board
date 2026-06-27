@@ -115,6 +115,7 @@ run_scp \
     "${ROOT}/scripts/diagnostics/robot_doctor_selftest.py" \
     "${ROOT}/scripts/diagnostics/fleet_doctor_summary.py" \
     "${ROOT}/scripts/diagnostics/apply_robot_doctor_fix.sh" \
+    "${ROOT}/scripts/diagnostics/dataset_run_audit.py" \
     "${ROOT}/scripts/diagnostics/diagnostic_pipeline_audit.py" \
     "${ROOT}/scripts/diagnostics/validate_robot_doctor_report.py" \
     "${ROOT}/scripts/diagnostics/synthesize_robot_doctor_failure.py" \

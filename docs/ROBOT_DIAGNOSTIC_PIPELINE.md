@@ -120,6 +120,26 @@ decision.state = blocked -> at least one FAIL; fix before further dataset collec
 `decision.primary_blocker` is the first branch to fix. It contains the
 failure-tree code, check name, evidence paths, and next action.
 
+For a full post-run dataset audit on the laptop, validate copied robot reports,
+bags, and session manifests together:
+
+```bash
+python3 scripts/diagnostics/dataset_run_audit.py \
+  --report 'diagnostic_reports/agv*/agv*/summary.json' \
+  --bag '/path/to/copied/bags/*' \
+  --manifest '/path/to/copied/manifests/*_manifest.yaml' \
+  --mocap-topic /optitrack/rigid_bodies/<rigid_body_name> \
+  --cmd-topic /<robot_name>/cmd_vel \
+  --require-gt \
+  --require-imu \
+  --strict \
+  --json-out diagnostic_reports/dataset_run_audits/latest/summary.json
+```
+
+Use this as the final publishability check for a collected run. It fails if
+robot_doctor evidence is invalid, reports are not `dataset_ready`, bags fail the
+ROS1/ROS2 validators, or manifests are incomplete.
+
 `effective_gate` records the exact gate values used for that run. This is what
 lets you prove all robots were tested against the same standard.
 

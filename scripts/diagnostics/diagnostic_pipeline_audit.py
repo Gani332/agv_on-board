@@ -72,6 +72,7 @@ class Audit:
             "scripts/diagnostics/run_robot_doctor_remote.sh",
             "scripts/diagnostics/run_fleet_doctor_remote.sh",
             "scripts/diagnostics/apply_robot_doctor_fix.sh",
+            "scripts/diagnostics/dataset_run_audit.py",
             "scripts/diagnostics/synthesize_robot_doctor_failure.py",
             "scripts/diagnostics/diagnostic_pipeline_audit.py",
             "scripts/setup_robot_ros2.sh",
@@ -93,6 +94,7 @@ class Audit:
             "scripts/diagnostics/run_robot_doctor_remote.sh",
             "scripts/diagnostics/run_fleet_doctor_remote.sh",
             "scripts/diagnostics/apply_robot_doctor_fix.sh",
+            "scripts/diagnostics/dataset_run_audit.py",
             "scripts/diagnostics/diagnostic_pipeline_audit.py",
             "scripts/setup_robot_ros2.sh",
             "scripts/logging/validate_ros2_bag.py",
@@ -234,6 +236,7 @@ class Audit:
                 "remote_wrapper_failure.txt",
                 "RUN_REMOTE_SELFTEST",
                 "diagnostic_pipeline_audit.py",
+                "dataset_run_audit.py",
                 "setup_robot_ros2.sh",
             ],
             ["scripts/diagnostics/run_robot_doctor_remote.sh"],
@@ -261,6 +264,21 @@ class Audit:
                 "require_configured_gate",
             ],
             ["scripts/diagnostics/fleet_doctor_summary.py"],
+        )
+        self.require_source_patterns(
+            "dataset_run_audit_guards",
+            [
+                "robot_doctor summary.json validation",
+                "report_dataset_ready",
+                "bag_validation",
+                "manifest_complete",
+                "fleet_same_gate",
+                "validate_ros2_bag.py",
+                "--mocap-topic",
+                "MOCAP_TOPIC",
+                "--cmd-topic",
+            ],
+            ["scripts/diagnostics/dataset_run_audit.py"],
         )
 
     def require_bag_validator_guards(self) -> None:
@@ -303,6 +321,7 @@ class Audit:
                 "operator_d455_swap_checklist.md",
                 "diagnostic_lock",
                 "process group",
+                "dataset_run_audit.py",
             ],
             ["docs/ROBOT_DIAGNOSTIC_PIPELINE.md"],
         )
@@ -317,6 +336,8 @@ class Audit:
                 "test_timeout_kills_child_process_group",
                 "test_diagnostic_lock_blocks_second_doctor",
                 "test_realsense_depth_isolation_zero_frames_is_usb_kernel",
+                "test_dataset_run_audit_manifest_complete",
+                "test_dataset_run_audit_reports_missing_fail",
             ],
             ["scripts/diagnostics/robot_doctor_selftest.py"],
         )

@@ -33,6 +33,7 @@ from robot_doctor import (  # noqa: E402
     build_parser,
     summarize_decision,
 )
+from dataset_run_audit import audit_manifests, audit_reports  # noqa: E402
 from fleet_doctor_summary import fleet_gate_errors, fleet_readiness_errors  # noqa: E402
 from validate_robot_doctor_report import resolve_evidence_path, validate_report  # noqa: E402
 
@@ -1019,6 +1020,49 @@ class RobotDoctorReportValidationTests(unittest.TestCase):
             self.assertEqual(report["decision"]["primary_blocker"]["code"], "3.2")
 
 
+class DatasetRunAuditTests(unittest.TestCase):
+    def test_dataset_run_audit_reports_missing_fail(self) -> None:
+        items = audit_reports([], require_ready=True, require_configured_gate=True)
+        self.assertEqual(len(items), 1)
+        self.assertEqual((items[0].status, items[0].check), ("FAIL", "reports_present"))
+
+    def test_dataset_run_audit_accepts_ready_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_dir = Path(tmp) / "report"
+            report_dir.mkdir()
+            report = make_report([CheckResult("3.1", "PASS", "disk_free", "ok")], profile="dataset")
+            report["output_dir"] = str(report_dir)
+            (report_dir / "summary.json").write_text(json.dumps(report) + "\n")
+            items = audit_reports([report_dir], require_ready=True, require_configured_gate=False)
+            self.assertEqual([item for item in items if item.status == "FAIL"], [])
+            self.assertTrue(any(item.check == "report_dataset_ready" for item in items))
+
+    def test_dataset_run_audit_manifest_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bag = root / "run_0.db3"
+            bag.write_bytes(b"sqlite placeholder")
+            manifest = root / "run_manifest.yaml"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "session_id: run",
+                        "robot_id: agv100",
+                        "scenario: square",
+                        "date: 2026-06-27",
+                        "time_start: '10:00:00'",
+                        "time_end: '10:01:00'",
+                        "bag_file: run_0.db3",
+                        "duration_sec: 60",
+                        "bag_size_mb: 1",
+                    ]
+                )
+            )
+            items = audit_manifests([manifest], require_manifest=True)
+            self.assertFalse([item for item in items if item.status == "FAIL"])
+            self.assertTrue(any(item.check == "manifest_complete" for item in items))
+
+
 class FleetDoctorSummaryTests(unittest.TestCase):
     def test_shell_wrappers_are_syntax_valid(self) -> None:
         scripts = [
@@ -1049,6 +1093,130 @@ class FleetDoctorSummaryTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertIn("failure_tree_codes", proc.stdout)
+
+    def test_dataset_run_audit_passes_synthetic_ros2_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bag_dir = tmp_path / "agv100_synthetic_20260627_120000"
+            write_ros2_bag(bag_dir, duration_sec=5.0)
+
+            report_dir = tmp_path / "report"
+            report_dir.mkdir()
+            report = make_report([CheckResult("3.1", "PASS", "disk_free", "ok")], profile="dataset")
+            report["loaded_config"] = {"gate_id": "test_gate", "gate_version": "1.0.0"}
+            report["config_sha256"] = "a" * 64
+            report["output_dir"] = str(report_dir)
+            summary = report_dir / "summary.json"
+            summary.write_text(json.dumps(report) + "\n")
+
+            manifest = tmp_path / "agv100_synthetic_20260627_120000_manifest.yaml"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "session_id: agv100_synthetic_20260627_120000",
+                        "robot_id: agv100",
+                        "scenario: synthetic",
+                        "date: 2026-06-27",
+                        "time_start: 12:00:00",
+                        "time_end: 12:00:05",
+                        f"bag_file: {bag_dir.name}",
+                        "duration_sec: 5",
+                        "bag_size_mb: 1",
+                        "",
+                    ]
+                )
+            )
+            json_out = tmp_path / "dataset_audit.json"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/diagnostics/dataset_run_audit.py"),
+                    "--report",
+                    str(summary),
+                    "--bag",
+                    str(bag_dir),
+                    "--manifest",
+                    str(manifest),
+                    "--min-duration",
+                    "4",
+                    "--mocap-topic",
+                    "/optitrack/rigid_bodies/agv",
+                    "--require-gt",
+                    "--require-imu",
+                    "--json-out",
+                    str(json_out),
+                    "--output-dir",
+                    str(tmp_path / "audit_logs"),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+            audit = json.loads(json_out.read_text())
+            self.assertIn(audit["verdict"], {"PASS", "WARN"})
+            self.assertFalse(any(item["status"] == "FAIL" for item in audit["items"]))
+
+    def test_dataset_run_audit_manifest_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            report_dir = tmp_path / "report"
+            report_dir.mkdir()
+            report = make_report([CheckResult("3.1", "PASS", "disk_free", "ok")], profile="dataset")
+            report["loaded_config"] = {"gate_id": "test_gate", "gate_version": "1.0.0"}
+            report["config_sha256"] = "a" * 64
+            report["output_dir"] = str(report_dir)
+            summary = report_dir / "summary.json"
+            summary.write_text(json.dumps(report) + "\n")
+
+            manifest = tmp_path / "bad_manifest.yaml"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "session_id: agv100_bad",
+                        "robot_id: agv100",
+                        "scenario: synthetic",
+                        "date: 2026-06-27",
+                        "time_start: 12:00:00",
+                        "time_end: ~",
+                        "bag_file: missing.bag",
+                        "duration_sec: ~",
+                        "bag_size_mb: ~",
+                        "",
+                    ]
+                )
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/diagnostics/dataset_run_audit.py"),
+                    "--report",
+                    str(summary),
+                    "--manifest",
+                    str(manifest),
+                    "--no-require-bag",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 1, proc.stdout)
+            self.assertIn("manifest_complete", proc.stdout)
+
+    def test_dataset_run_audit_reports_missing_fail(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/diagnostics/dataset_run_audit.py"),
+                "--no-require-bag",
+                "--no-require-manifest",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("reports_present", proc.stdout)
 
     def test_fleet_gate_errors_detect_mixed_config(self) -> None:
         rows = [

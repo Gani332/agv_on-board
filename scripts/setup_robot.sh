@@ -187,6 +187,7 @@ chmod +x \
     "${ROOT}/scripts/logging/validate_bag.py" \
     "${ROOT}/scripts/logging/validate_ros2_bag.py" \
     "${ROOT}/scripts/logging/audit_bag_fast.py" \
+    "${ROOT}/scripts/diagnostics/dataset_run_audit.py" \
     "${ROOT}/scripts/diagnostics/fleet_doctor_summary.py" \
     "${ROOT}/scripts/diagnostics/apply_robot_doctor_fix.sh" \
     "${ROOT}/scripts/diagnostics/robot_doctor.py" \
