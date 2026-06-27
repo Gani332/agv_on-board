@@ -8,6 +8,16 @@ The goal of this repo is repeatable deployment: clone or pull it on a robot, run
 
 On a new robot:
 
+### 0. Wi-Fi
+
+For fresh SD cards and hotspot setup, use the netplan/cloud-init template in
+`ros2_wifi_setup/wifi_setup.txt`. Replace the Wi-Fi SSID/password placeholders
+there before flashing or applying network config.
+
+Do not repeatedly start `wpa_supplicant -B` and `dhclient` by hand; that can
+leave duplicate Wi-Fi/DHCP processes and make SSH, apt, git, and ROS traffic
+unstable.
+
 ### 1. Installation
 On a fresh or updated robot, use one of the following methods to retrieve the stack.
 
@@ -51,19 +61,32 @@ provisioned or has no internet access.
 
 ### RealSense Dependency
 
-The D455 RGB-D stack is validated with `librealsense2` v2.57.6. Fresh robots
-should use the Intel RealSense SDK 2.57.6 runtime, development headers, utils,
-and udev rules before rebuilding `agv_ws`. The vendored `realsense2_camera`
-wrapper in this repo must build and run against the same SDK version.
-
-Avoid mixing this workspace with the older ROS Melodic apt SDK headers
+The legacy ROS 1 stack in `agv_ws` was validated with `librealsense2` v2.57.6.
+Avoid mixing that workspace with older ROS Melodic apt SDK headers
 (`ros-melodic-librealsense2`, commonly v2.50.0). On a correctly provisioned
-robot, `roslaunch agv_bringup bringup.launch` prints:
+legacy robot, `roslaunch agv_bringup bringup.launch` prints:
 
 ```text
 Built with LibRealSense v2.57.6
 Running with LibRealSense v2.57.6
 ```
+
+For the ROS 2 dataset robots, the authoritative camera standard is enforced by
+`configs/robot_doctor_dataset_gate.json`:
+
+```text
+D455 firmware:                  5.17.0.10
+standalone librealsense tools:  2.58.1
+RealSense ROS driver:           realsense2_camera 4.57.7
+RealSense ROS node runtime:     LibRealSense 2.57.7
+RGB-D stream gate:              640x480 at 15 Hz
+USB gate:                       USB 3.x / 5000 Mb/s
+```
+
+The ROS 2 setup path also installs D455-specific udev rules for USB autosuspend
+and `uvcvideo` binding. This covers the failure where `lsusb` sees the D455 at
+USB3 but RealSense tools report no device because the Video interfaces are
+unbound.
 
 Check the installed SDK headers with:
 
@@ -78,6 +101,69 @@ cd ~/slam_project
 export REQUIRE_GT=false
 export REQUIRE_IMU=true
 bash scripts/logging/start_session.sh agv1 square_manual
+```
+
+Before collecting publishable data, run the unified diagnostic gate:
+
+```bash
+cd ~/slam_project
+bash scripts/diagnostics/robot_doctor.sh agv1 --profile preflight
+```
+
+For strict pre-run collection readiness, use the dataset gate and keep the
+generated `~/agv_data/diagnostics/<robot>_<timestamp>/summary.json` with the
+run notes. This proves the robot side before motion, but it is not a post-run
+bag audit:
+
+```bash
+bash scripts/diagnostics/robot_doctor.sh <robot_name> \
+  --config configs/robot_doctor_dataset_gate.json \
+  --mocap-topic /optitrack/rigid_bodies/<rigid_body_name> \
+  --cmd-topic /<robot_name>/cmd_vel \
+  --strict-ops \
+  --confirm-mechanical \
+  --confirm-mocap \
+  --confirm-anchors
+```
+
+After recording, run the post-run dataset audit with the bag path:
+
+```bash
+bash scripts/diagnostics/robot_doctor.sh <robot_name> \
+  --config configs/robot_doctor_dataset_gate.json \
+  --require-bag \
+  --bag ~/agv_data/<bag_dir_or_bag_file> \
+  --mocap-topic /optitrack/rigid_bodies/<rigid_body_name> \
+  --cmd-topic /<robot_name>/cmd_vel \
+  --strict-ops \
+  --confirm-mechanical \
+  --confirm-mocap \
+  --confirm-anchors
+```
+
+The diagnostic report maps every failure to the failure tree in
+`robot_failure_modes_v3.png`: robot platform, robot data stack, or experiment
+dataset. Full instructions are in
+[`docs/ROBOT_DIAGNOSTIC_PIPELINE.md`](docs/ROBOT_DIAGNOSTIC_PIPELINE.md).
+If the report raises `1.2 d455_physical_swap_evidence`, complete the generated
+`operator_d455_swap_checklist.md` before deciding whether the fault follows the
+camera, cable, robot USB3 port, or power path.
+
+After running diagnostics across several robots, use the strict fleet audit
+before treating a collection as publishable:
+
+```bash
+python3 scripts/diagnostics/fleet_doctor_summary.py \
+  --strict-fleet \
+  diagnostic_reports/agv*/*/summary.json
+```
+
+For a lab host list, the equivalent remote wrapper form is:
+
+```bash
+SSH_PASS=ubuntu bash scripts/diagnostics/run_fleet_doctor_remote.sh hosts.txt --strict-fleet -- \
+  --config configs/robot_doctor_dataset_gate.json \
+  --profile preflight
 ```
 
 Drive manually in another terminal:
@@ -276,8 +362,17 @@ Use these paths for normal robot operation:
 
 ```text
 scripts/setup_robot.sh                     Build/check workspaces after clone or pull
+scripts/diagnostics/apply_robot_doctor_fix.sh Targeted, dry-run-first remediation for known findings
+scripts/diagnostics/robot_doctor.sh        Unified robot readiness/failure-classification gate
+scripts/diagnostics/fleet_doctor_summary.py Compare robot_doctor summaries across a fleet
+scripts/diagnostics/robot_doctor_selftest.py No-hardware regression tests for diagnostics
+scripts/diagnostics/run_fleet_doctor_remote.sh Deploy/run diagnostics across a host list
+scripts/diagnostics/run_robot_doctor_remote.sh Deploy/run diagnostics on a robot over SSH
+scripts/diagnostics/validate_robot_doctor_report.py Validate summary.json consistency
+scripts/setup_robot_ros2.sh                ROS 2 robot provisioning with RealSense/tooling gate
 scripts/logging/start_session.sh           One-command bringup + rosbag + manifest
 scripts/logging/validate_bag.py            Full post-run publishability check
+scripts/logging/validate_ros2_bag.py       ROS 2 rosbag2/.db3 publishability check
 scripts/logging/audit_bag_fast.py          Fast topic/rate/gap/sync audit
 scripts/logging/drive_straight.py          Odom-bounded straight-line dataset helper
 scripts/logging/drive_mocap_straight.py    OptiTrack mocap-feedback straight-line helper
@@ -571,7 +666,7 @@ rm -f ~/agv_data/*.bag ~/agv_data/*.bag.active ~/agv_data/*_manifest.yaml ~/agv_
 AGV base controller: /dev/ttyACM0
 YDLiDAR X2:          /dev/ttyAMA0
 RealSense D455:      USB 3.x, RGB-D 640x480 at 15 Hz
-RealSense SDK:       librealsense2 v2.57.6 runtime + dev headers
+ROS2 camera gate:    firmware 5.17.0.10, tools 2.58.1, driver 4.57.7, node SDK 2.57.7
 Base IMU topic:      /imu at about 12.6 Hz, frame_id=imu_link
 ```
 
@@ -580,12 +675,14 @@ Base IMU topic:      /imu at about 12.6 Hz, frame_id=imu_link
 For each robot:
 
 1. Clone/pull this repo to `~/slam_project`.
-2. Confirm the robot has `librealsense2` v2.57.6 runtime and dev headers.
-3. Run `bash scripts/setup_robot.sh`.
-4. Assign a stable robot name, e.g. `agv1`, `agv2`, `agv3`.
-5. Record with `bash scripts/logging/start_session.sh <robot_name> <scenario>`.
-6. Keep robot bags and any separate PhaseSpace logs named with the same robot/scenario/timestamp convention.
-7. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.
+2. Assign a stable robot name, e.g. `agv100`, `agv101`, `agv102`.
+3. On ROS 2 robots, run `SUDO_PASSWORD=ubuntu bash scripts/setup_robot_ros2.sh <robot_name>`.
+4. Run `robot_doctor` with `configs/robot_doctor_dataset_gate.json`.
+5. Fix any `FAIL`; resolve or explicitly document every `WARN`.
+6. If D455 physical-path failures persist after USB reset, complete the camera/cable/host-port A/B swap checklist.
+7. Record with `bash scripts/logging/start_session.sh <robot_name> <scenario>`.
+8. Keep robot bags, manifests, and `robot_doctor` summaries with the same robot/scenario/timestamp convention.
+9. Before each run, confirm chrony on robot and mocap machines if ground truth is recorded separately.
 
 Offline Swarm-SLAM analysis wrappers live in `scripts/swarmslam/`. The upstream
 Swarm-SLAM checkout and generated results should remain outside git in the

@@ -50,6 +50,7 @@ __pycache__/
 /downloaded_bags/
 /external_datasets/
 /fleet_logs/
+/diagnostic_reports/
 /report_results/
 /diagnostics/
 /scenario1.txt

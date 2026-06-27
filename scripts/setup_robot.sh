@@ -185,7 +185,17 @@ chmod +x \
     "${ROOT}/scripts/logging/drive_odom_shuttle.py" \
     "${ROOT}/scripts/logging/launch_odom_shuttle_fleet.sh" \
     "${ROOT}/scripts/logging/validate_bag.py" \
+    "${ROOT}/scripts/logging/validate_ros2_bag.py" \
     "${ROOT}/scripts/logging/audit_bag_fast.py" \
+    "${ROOT}/scripts/diagnostics/fleet_doctor_summary.py" \
+    "${ROOT}/scripts/diagnostics/apply_robot_doctor_fix.sh" \
+    "${ROOT}/scripts/diagnostics/robot_doctor.py" \
+    "${ROOT}/scripts/diagnostics/robot_doctor.sh" \
+    "${ROOT}/scripts/diagnostics/robot_doctor_selftest.py" \
+    "${ROOT}/scripts/diagnostics/run_fleet_doctor_remote.sh" \
+    "${ROOT}/scripts/diagnostics/run_robot_doctor_remote.sh" \
+    "${ROOT}/scripts/diagnostics/synthesize_robot_doctor_failure.py" \
+    "${ROOT}/scripts/diagnostics/validate_robot_doctor_report.py" \
     "${ROOT}/scripts/diagnostics/"*.sh 2>/dev/null || true
 
 section "next commands"
@@ -196,6 +206,9 @@ source ${ROOT}/agv_ws/devel/setup.bash
 
 # One-command data run:
 bash ${ROOT}/scripts/logging/start_session.sh agv1 square_manual
+
+# One-command readiness diagnosis:
+bash ${ROOT}/scripts/diagnostics/robot_doctor.sh agv1 --profile preflight
 
 # Optional manual teleop in another terminal:
 rosrun myagv_teleop myagv_teleop.py

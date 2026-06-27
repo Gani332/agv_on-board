@@ -1,0 +1,90 @@
+AGV Wi-Fi Setup Template
+
+Use this for future robot setup instead of manually running wpa_supplicant and
+dhclient. Manual background Wi-Fi commands can leave duplicate network managers
+and DHCP clients running, which makes SSH, apt, git, and ROS 2 traffic unstable.
+
+Placeholders to replace:
+
+    <YOUR_WIFI_NETWORK_NAME>
+    <YOUR_WIFI_PASSWORD>
+
+Recommended running-robot setup
+-------------------------------
+
+Run this once over SSH or from a local terminal on the robot:
+
+    sudo tee /etc/netplan/99-agv-wifi.yaml >/dev/null <<'EOF'
+    network:
+      version: 2
+      wifis:
+        wlan0:
+          optional: true
+          dhcp4: true
+          access-points:
+            "<YOUR_WIFI_NETWORK_NAME>":
+              password: "<YOUR_WIFI_PASSWORD>"
+    EOF
+
+    sudo chmod 600 /etc/netplan/99-agv-wifi.yaml
+    sudo netplan generate
+    sudo netplan apply
+
+After reconnecting, disable Wi-Fi power save for the current boot:
+
+    sudo iw dev wlan0 set power_save off
+
+If the robot does not have iw yet, install it after apt is working:
+
+    sudo apt-get update
+    sudo apt-get install -y iw
+    sudo iw dev wlan0 set power_save off
+
+Persistent NetworkManager power-save disable, if NetworkManager is active:
+
+    sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf >/dev/null <<'EOF'
+    [connection]
+    wifi.powersave = 2
+    EOF
+
+    sudo systemctl restart NetworkManager
+
+Fresh SD-card / cloud-init network-config
+-----------------------------------------
+
+When preparing a freshly flashed Ubuntu Server SD card, put this in the
+system-boot cloud-init network config instead of booting first and manually
+starting wpa_supplicant:
+
+    version: 2
+    wifis:
+      wlan0:
+        optional: true
+        dhcp4: true
+        access-points:
+          "<YOUR_WIFI_NETWORK_NAME>":
+            password: "<YOUR_WIFI_PASSWORD>"
+
+Do not use this old manual approach
+-----------------------------------
+
+Avoid repeatedly running:
+
+    wpa_passphrase "..." "..." | sudo tee -a /etc/wpa_supplicant/wpa_supplicant.conf
+    sudo wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
+    sudo dhclient wlan0
+
+That can append duplicate network blocks and start extra background processes.
+If a robot already used that approach, check for duplicate managers:
+
+    ps -ef | grep -E 'wpa_supplicant|dhclient|NetworkManager|systemd-networkd' | grep -v grep
+    systemctl is-active NetworkManager systemd-networkd wpa_supplicant
+    ip -4 addr show wlan0
+    iw dev wlan0 link
+
+Expected healthy state
+----------------------
+
+Only one network management path should be responsible for wlan0. The robot
+should have one IPv4 address on wlan0, good signal, and no manual dhclient
+process left running from a previous setup attempt.
