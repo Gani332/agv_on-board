@@ -539,8 +539,27 @@ run_camera_pre_gate() {
     }
 
     _camera_max_gap_from_log() {
-        grep -oE 'max: [0-9.]+s' "$1" | \
-            awk '{gsub("s", "", $2); if ($2 + 0 > max) max = $2 + 0} END {if (max != "") print max}'
+        local file="$1"
+        local min_window="$2"
+        awk -v min_window="${min_window}" '
+            /min: .* max: .* window:/ {
+                max_gap = ""
+                window = ""
+                for (i = 1; i <= NF; i++) {
+                    if ($i == "max:") {
+                        max_gap = $(i + 1)
+                        gsub("s", "", max_gap)
+                    }
+                    if ($i == "window:") {
+                        window = $(i + 1)
+                    }
+                }
+                if (max_gap != "" && window + 0 >= min_window && max_gap + 0 > max) {
+                    max = max_gap + 0
+                }
+            }
+            END { if (max != "") print max }
+        ' "${file}"
     }
 
     _camera_check_rate_log() {
@@ -550,6 +569,7 @@ run_camera_pre_gate() {
         local label="$4"
         local warn_gap_limit="$5"
         local hard_gap_limit="$6"
+        local min_gap_window="$7"
         local max_gap
 
         rate="$(_camera_rate_from_log "${file}")"
@@ -565,22 +585,22 @@ run_camera_pre_gate() {
             failures=$((failures + 1))
         fi
 
-        max_gap="$(_camera_max_gap_from_log "${file}")"
+        max_gap="$(_camera_max_gap_from_log "${file}" "${min_gap_window}")"
         if [ -z "${max_gap}" ]; then
-            echo "WARN ${label}: no max-gap data found for ${topic}" | tee -a "${CAMERA_GATE_PRE_LOG}"
+            echo "WARN ${label}: no steady-state max-gap data found for ${topic} after window ${min_gap_window}" | tee -a "${CAMERA_GATE_PRE_LOG}"
         elif awk -v gap="${max_gap}" -v limit="${warn_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
-            echo "PASS ${label} max gap: ${max_gap}s <= warning ${warn_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
+            echo "PASS ${label} steady max gap: ${max_gap}s <= warning ${warn_gap_limit}s after window ${min_gap_window}" | tee -a "${CAMERA_GATE_PRE_LOG}"
         elif awk -v gap="${max_gap}" -v limit="${hard_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
-            echo "WARN ${label} max gap: ${max_gap}s exceeds warning ${warn_gap_limit}s but is <= hard ${hard_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
+            echo "WARN ${label} steady max gap: ${max_gap}s exceeds warning ${warn_gap_limit}s but is <= hard ${hard_gap_limit}s after window ${min_gap_window}" | tee -a "${CAMERA_GATE_PRE_LOG}"
         else
-            echo "FAIL ${label} max gap: ${max_gap}s exceeds hard ${hard_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
+            echo "FAIL ${label} steady max gap: ${max_gap}s exceeds hard ${hard_gap_limit}s after window ${min_gap_window}" | tee -a "${CAMERA_GATE_PRE_LOG}"
             failures=$((failures + 1))
         fi
     }
 
-    _camera_check_rate_log /camera/color/image_raw "${color_log}" "${MIN_RGBD_HZ}" "color stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}"
-    _camera_check_rate_log /camera/aligned_depth_to_color/image_raw "${depth_log}" "${MIN_RGBD_HZ}" "aligned depth stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}"
-    _camera_check_rate_log /camera/imu "${imu_log}" "${MIN_CAMERA_IMU_HZ}" "camera imu stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}"
+    _camera_check_rate_log /camera/color/image_raw "${color_log}" "${MIN_RGBD_HZ}" "color stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40
+    _camera_check_rate_log /camera/aligned_depth_to_color/image_raw "${depth_log}" "${MIN_RGBD_HZ}" "aligned depth stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40
+    _camera_check_rate_log /camera/imu "${imu_log}" "${MIN_CAMERA_IMU_HZ}" "camera imu stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" 80
 
     if grep -Eiq "The device has been disconnected|USB disconnect|No such device|device removed" "${gate_bringup_log}" 2>/dev/null; then
         echo "FAIL RealSense runtime log: camera disconnect/device-drop errors observed" | tee -a "${CAMERA_GATE_PRE_LOG}"

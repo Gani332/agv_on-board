@@ -766,11 +766,11 @@ class RealSenseFaultClassifierTests(unittest.TestCase):
     def test_bounded_rgbd_gap_is_pass_with_stream_warnings(self) -> None:
         text = """
 PASS color stream: /camera/color/image_raw 14.638 Hz
-WARN color stream max gap: 0.655s exceeds warning 0.25s but is <= hard 0.75s
+WARN color stream steady max gap: 0.655s exceeds warning 0.25s but is <= hard 0.75s after window 40
 PASS aligned depth stream: /camera/aligned_depth_to_color/image_raw 14.986 Hz
-WARN aligned depth stream max gap: 0.651s exceeds warning 0.25s but is <= hard 0.75s
+WARN aligned depth stream steady max gap: 0.651s exceeds warning 0.25s but is <= hard 0.75s after window 40
 PASS camera imu stream: /camera/imu 200.066 Hz
-PASS camera imu stream max gap: 0.011s <= warning 0.10s
+PASS camera imu stream steady max gap: 0.011s <= warning 0.10s after window 80
 PASS RealSense runtime log: no UVC/control timeout text observed
 speed=5000
 """
@@ -782,10 +782,10 @@ speed=5000
     def test_hard_rgbd_gap_remains_stream_gap_failure(self) -> None:
         text = """
 PASS color stream: /camera/color/image_raw 14.638 Hz
-FAIL color stream max gap: 1.250s exceeds hard 0.75s
+FAIL color stream steady max gap: 1.250s exceeds hard 0.75s after window 40
 PASS aligned depth stream: /camera/aligned_depth_to_color/image_raw 14.986 Hz
 PASS camera imu stream: /camera/imu 200.066 Hz
-PASS camera imu stream max gap: 0.011s <= warning 0.10s
+PASS camera imu stream steady max gap: 0.011s <= warning 0.10s after window 80
 speed=5000
 """
         classification, _, _ = classify_realsense_fault(text)

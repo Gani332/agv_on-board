@@ -207,6 +207,28 @@ else
 fi
 echo "========================================================================"
 
+if [ -n "${BRINGUP_CMD}" ]; then
+    existing_bringup="$(
+        pgrep -af 'ros2 launch agv_bringup|realsense2_camera_node|ydlidar_ros2_driver_node|myagv_odometry' 2>/dev/null | \
+            grep -Ev 'dataset_ready_gate|robot_doctor.py|grep' || true
+    )"
+    if [ -n "${existing_bringup}" ]; then
+        stale_log="${OUTPUT_ROOT}/${ROBOT_ID}_existing_bringup_$(date +%Y%m%d_%H%M%S).log"
+        printf "%s\n" "${existing_bringup}" > "${stale_log}"
+        echo "READY_TO_RECORD: false"
+        echo "POST_RUN_DATASET_READY: false"
+        echo "STATE: blocked"
+        echo "FAILED_STAGE: 2.2 Drivers / launch config"
+        echo "CAUSE: --bringup was requested but sensor bringup processes are already running"
+        echo "EVIDENCE:"
+        echo "  - ${stale_log}"
+        echo "NEXT_ACTION: stop the existing bringup/session first, or rerun without --bringup if you intentionally want to validate the existing ROS graph"
+        echo "BLOCKERS:"
+        echo "  - 2.2 Drivers / launch config: existing_bringup_processes: --bringup would create duplicate sensor drivers"
+        exit 1
+    fi
+fi
+
 set +e
 python3 "${SCRIPT_DIR}/robot_doctor.py" "${ROBOT_ID}" \
     --config "${CONFIG}" \

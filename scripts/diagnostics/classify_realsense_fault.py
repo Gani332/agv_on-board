@@ -67,11 +67,11 @@ def topic_state(text: str, topics: tuple[str, ...]) -> tuple[list[str], list[str
         for label, topic in GATE_LABEL_TOPICS.items():
             if topic not in topics:
                 continue
-            if re.match(rf"^PASS {re.escape(label)}( max gap)?:", line):
+            if re.match(rf"^PASS {re.escape(label)}( (steady )?max gap)?:", line):
                 passed.append(topic)
-            if re.match(rf"^WARN {re.escape(label)}( max gap)?:", line):
+            if re.match(rf"^WARN {re.escape(label)}( (steady )?max gap)?:", line):
                 warned.append(topic)
-            if re.match(rf"^FAIL {re.escape(label)}( max gap)?:", line):
+            if re.match(rf"^FAIL {re.escape(label)}( (steady )?max gap)?:", line):
                 failed.append(topic)
 
     for topic in topics:

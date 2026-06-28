@@ -69,7 +69,9 @@ property of this hardware/software stack.
 Instead, the pre-run gate proves:
 
 - RGB-D average rate is high enough for collection.
-- RGB-D continuity gaps are bounded.
+- Steady-state RGB-D continuity gaps are bounded after the topic-rate
+  subscriber window is full. Initial ROS discovery/subscriber startup delay is
+  logged but is not treated as runtime frame dropout.
 - D455 IMU continuity remains strict.
 - USB link, power/throttle, and RealSense runtime logs do not show transport
   failure.

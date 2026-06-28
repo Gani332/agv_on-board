@@ -227,8 +227,27 @@ rate_from_log() {
 }
 
 max_gap_from_log() {
-    grep -oE 'max: [0-9.]+s' "$1" | \
-        awk '{gsub("s", "", $2); if ($2 + 0 > max) max = $2 + 0} END {if (max != "") print max}'
+    local file="$1"
+    local min_window="$2"
+    awk -v min_window="${min_window}" '
+        /min: .* max: .* window:/ {
+            max_gap = ""
+            window = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i == "max:") {
+                    max_gap = $(i + 1)
+                    gsub("s", "", max_gap)
+                }
+                if ($i == "window:") {
+                    window = $(i + 1)
+                }
+            }
+            if (max_gap != "" && window + 0 >= min_window && max_gap + 0 > max) {
+                max = max_gap + 0
+            }
+        }
+        END { if (max != "") print max }
+    ' "${file}"
 }
 
 log_size() {
@@ -276,17 +295,18 @@ check_gap() {
     local label="$3"
     local warn_gap_limit="$4"
     local hard_gap_limit="$5"
+    local min_gap_window="$6"
     local max_gap
 
-    max_gap="$(max_gap_from_log "${file}")"
+    max_gap="$(max_gap_from_log "${file}" "${min_gap_window}")"
     if [ -z "${max_gap}" ]; then
-        warn_gate "${label} max gap" "no max-gap data found for ${topic}"
+        warn_gate "${label} steady max gap" "no steady-state max-gap data found for ${topic} after window ${min_gap_window}"
     elif awk -v gap="${max_gap}" -v limit="${warn_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
-        pass_gate "${label} max gap" "${max_gap}s <= warning ${warn_gap_limit}s"
+        pass_gate "${label} steady max gap" "${max_gap}s <= warning ${warn_gap_limit}s after window ${min_gap_window}"
     elif awk -v gap="${max_gap}" -v limit="${hard_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
-        warn_gate "${label} max gap" "${max_gap}s exceeds warning ${warn_gap_limit}s but is <= hard ${hard_gap_limit}s"
+        warn_gate "${label} steady max gap" "${max_gap}s exceeds warning ${warn_gap_limit}s but is <= hard ${hard_gap_limit}s after window ${min_gap_window}"
     else
-        fail_gate "${label} max gap" "${max_gap}s exceeds hard ${hard_gap_limit}s"
+        fail_gate "${label} steady max gap" "${max_gap}s exceeds hard ${hard_gap_limit}s after window ${min_gap_window}"
     fi
 }
 
@@ -371,9 +391,9 @@ wait "${HZ_IMU_PID}" 2>/dev/null || true
 check_rate /camera/color/image_raw "${RUN_DIR}/hz_color.txt" "${MIN_RGBD_HZ}" "color stream"
 check_rate /camera/aligned_depth_to_color/image_raw "${RUN_DIR}/hz_aligned_depth.txt" "${MIN_RGBD_HZ}" "aligned depth stream"
 check_rate /camera/imu "${RUN_DIR}/hz_camera_imu.txt" "${MIN_CAMERA_IMU_HZ}" "camera imu stream"
-check_gap /camera/color/image_raw "${RUN_DIR}/hz_color.txt" "color stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}"
-check_gap /camera/aligned_depth_to_color/image_raw "${RUN_DIR}/hz_aligned_depth.txt" "aligned depth stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}"
-check_gap /camera/imu "${RUN_DIR}/hz_camera_imu.txt" "camera imu stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}"
+check_gap /camera/color/image_raw "${RUN_DIR}/hz_color.txt" "color stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40
+check_gap /camera/aligned_depth_to_color/image_raw "${RUN_DIR}/hz_aligned_depth.txt" "aligned depth stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40
+check_gap /camera/imu "${RUN_DIR}/hz_camera_imu.txt" "camera imu stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" 80
 
 cleanup
 trap - EXIT
