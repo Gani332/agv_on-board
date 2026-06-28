@@ -409,9 +409,12 @@ def classify_gaps(item: TopicStats, target_hz: float) -> Tuple[int, int, Optiona
 
 
 def gap_limits_for_topic(topic: str, target_hz: float) -> Tuple[float, float]:
-    if topic.startswith("/camera/") and (
-        topic.endswith("/image_raw") or topic.endswith("/camera_info")
-    ):
+    if topic.startswith("/camera/") and topic.endswith("/camera_info"):
+        return (
+            env_float("CAMERA_INFO_MINOR_GAP_SEC", 0.75),
+            env_float("CAMERA_INFO_MAJOR_GAP_SEC", 2.0),
+        )
+    if topic.startswith("/camera/") and topic.endswith("/image_raw"):
         return (
             env_float("RGBD_MINOR_GAP_SEC", 0.25),
             env_float("RGBD_MAJOR_GAP_SEC", 0.75),
