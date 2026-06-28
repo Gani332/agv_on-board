@@ -306,6 +306,75 @@ def validate_ros2_metadata(path: Path, storage_files: Sequence[Path], results: L
         record(results, PASS, "metadata_yaml", f"metadata.yaml present for {len(storage_files)} storage file(s)")
 
 
+def storage_resilience_evidence(path: Path) -> List[str]:
+    evidence: List[str] = []
+    candidates: List[Path] = []
+    if path.is_dir():
+        candidates.extend(path.glob("*manifest*.yaml"))
+        candidates.extend(path.glob("*manifest*.yml"))
+        parent_manifest = path.parent / f"{path.name}_manifest.yaml"
+        if parent_manifest.exists():
+            candidates.append(parent_manifest)
+        metadata = path / "metadata.yaml"
+        if metadata.exists():
+            candidates.append(metadata)
+        candidates.extend(path.glob("*.db3-wal"))
+    elif path.is_file():
+        candidates.extend(path.parent.glob(f"{path.stem}*manifest*.yaml"))
+        candidates.extend(path.parent.glob(f"{path.stem}*manifest*.yml"))
+        wal = path.with_name(path.name + "-wal")
+        if wal.exists():
+            candidates.append(wal)
+
+    for candidate in dict.fromkeys(candidates):
+        if candidate.suffix == ".db3-wal" or candidate.name.endswith(".db3-wal"):
+            evidence.append(f"active WAL sidecar: {candidate.name}")
+            continue
+        try:
+            text = candidate.read_text(errors="replace").lower()
+        except Exception:
+            continue
+        if (
+            "sqlite_resilient" in text
+            or "journal_mode=wal" in text
+            or "journal_mode = wal" in text
+            or "journal_mode: wal" in text
+            or "storage_preset_profile: resilient" in text
+            or "storage-preset-profile resilient" in text
+            or "storage-config-file" in text and "wal" in text
+            or "storage_config_uri" in text and "wal" in text
+        ):
+            evidence.append(f"{candidate.name} records sqlite_resilient/WAL")
+    return evidence
+
+
+def validate_storage_resilience(
+    path: Path,
+    db3_files: Sequence[Path],
+    mcap_files: Sequence[Path],
+    require_resilient_storage: bool,
+    results: List[Result],
+) -> None:
+    print("\n--- Storage resilience ---")
+    if mcap_files and not db3_files:
+        record(results, PASS, "storage_resilience", "MCAP storage used")
+        return
+    if not db3_files:
+        record(results, WARN, "storage_resilience", "storage resilience could not be evaluated")
+        return
+    evidence = storage_resilience_evidence(path)
+    if evidence:
+        record(results, PASS, "storage_resilience", "; ".join(evidence))
+        return
+    level = FAIL if require_resilient_storage else WARN
+    record(
+        results,
+        level,
+        "storage_resilience",
+        "SQLite .db3 storage used, but no sqlite_resilient/WAL evidence was found",
+    )
+
+
 def choose_topic(stats: Dict[str, TopicStats], candidates: Sequence[str]) -> Optional[TopicStats]:
     for topic in candidates:
         if topic in stats:
@@ -561,6 +630,12 @@ def main() -> int:
     parser.add_argument("--strict", action="store_true", help="return WARN as non-zero")
     parser.add_argument("--require-gt", action="store_true", default=env_bool("REQUIRE_GT"))
     parser.add_argument("--require-imu", action="store_true", default=env_bool("REQUIRE_IMU"))
+    parser.add_argument(
+        "--require-resilient-storage",
+        action="store_true",
+        default=env_bool("REQUIRE_RESILIENT_STORAGE"),
+        help="fail SQLite .db3 bags unless sqlite_resilient/WAL evidence is recorded, or use MCAP",
+    )
     parser.add_argument("--min-duration", type=float, default=float(os.environ.get("MIN_DURATION_SEC", "30")))
     parser.add_argument("--json-out", help="write machine-readable validation report")
     args = parser.parse_args()
@@ -592,6 +667,7 @@ def main() -> int:
             record(results, FAIL, "bag_integrity", f"SQLite aggregate read failed: {exc}")
             stats = {}
         validate_ros2_metadata(path, db3_files, results)
+        validate_storage_resilience(path, db3_files, mcap_files, args.require_resilient_storage, results)
         bag_start_ns, bag_end_ns, duration_sec = bag_bounds(stats)
     else:
         try:
@@ -602,6 +678,7 @@ def main() -> int:
             record(results, FAIL, "bag_integrity", str(exc))
             stats = {}
         validate_ros2_metadata(path, mcap_files, results)
+        validate_storage_resilience(path, db3_files, mcap_files, args.require_resilient_storage, results)
         bag_start_ns, bag_end_ns, duration_sec = bag_bounds(stats)
 
     print("\n--- Duration ---")
@@ -645,6 +722,7 @@ def main() -> int:
         "duration_sec": duration_sec,
         "verdict": verdict,
         "counts": {"pass": n_pass, "warn": n_warn, "fail": n_fail},
+        "require_resilient_storage": args.require_resilient_storage,
         "topics": {name: asdict(item) for name, item in sorted(stats.items())},
         "results": [asdict(item) for item in results],
     }

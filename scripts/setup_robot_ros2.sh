@@ -272,6 +272,31 @@ install_realsense_stack() {
     done
 }
 
+install_d455_boot_quirk() {
+    section "d455 usb boot quirk"
+    local cmdline_file="/boot/firmware/cmdline.txt"
+    if [ ! -f "${cmdline_file}" ]; then
+        cmdline_file="/boot/cmdline.txt"
+    fi
+    if [ ! -f "${cmdline_file}" ]; then
+        echo "WARN: boot cmdline file not found; cannot install usbcore D455 quirk."
+        return
+    fi
+    if grep -qw "usbcore.quirks=8086:0b5c:kn" "${cmdline_file}"; then
+        echo "usbcore.quirks=8086:0b5c:kn already present in ${cmdline_file}"
+        return
+    fi
+    sudo_run cp "${cmdline_file}" "${cmdline_file}.bak.$(date +%Y%m%d_%H%M%S)"
+    python_script='from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+parts = [item for item in path.read_text().strip().split() if not item.startswith("usbcore.quirks=")]
+parts.append("usbcore.quirks=8086:0b5c:kn")
+path.write_text(" ".join(parts) + "\n")'
+    printf '%s\n' "${python_script}" | sudo_run python3 - "${cmdline_file}"
+    echo "installed usbcore.quirks=8086:0b5c:kn in ${cmdline_file}; reboot required"
+}
+
 install_d455_power_rule() {
     section "d455 usb power rule"
     local rule_file="/etc/udev/rules.d/99-realsense-d455-power.rules"
@@ -284,6 +309,48 @@ ACTION=="change", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b
     sudo_run udevadm control --reload-rules
     sudo_run udevadm trigger --subsystem-match=usb --attr-match=idVendor=8086 --attr-match=idProduct=0b5c || true
     echo "installed ${rule_file}"
+}
+
+install_d455_power_service() {
+    section "d455 usb power service"
+    local script_file="/usr/local/sbin/orkar-d455-power.sh"
+    local service_file="/etc/systemd/system/orkar-d455-power.service"
+    local script_content
+    script_content='#!/usr/bin/env bash
+set -euo pipefail
+for _ in $(seq 1 30); do
+  found=false
+  for d in /sys/bus/usb/devices/*; do
+    [ -f "${d}/idVendor" ] || continue
+    [ -f "${d}/idProduct" ] || continue
+    [ "$(cat "${d}/idVendor" 2>/dev/null)" = "8086" ] || continue
+    [ "$(cat "${d}/idProduct" 2>/dev/null)" = "0b5c" ] || continue
+    found=true
+    [ -f "${d}/power/control" ] && echo on > "${d}/power/control" || true
+    [ -f "${d}/power/autosuspend_delay_ms" ] && echo -1 > "${d}/power/autosuspend_delay_ms" || true
+  done
+  "${found}" && exit 0
+  sleep 1
+done
+exit 0'
+    local service_content
+    service_content='[Unit]
+Description=Disable runtime autosuspend for Intel RealSense D455
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/orkar-d455-power.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target'
+    sudo_write_file "${script_file}" 0755 "${script_content}"
+    sudo_write_file "${service_file}" 0644 "${service_content}"
+    sudo_run systemctl daemon-reload
+    sudo_run systemctl enable --now orkar-d455-power.service >/dev/null || true
+    echo "installed ${service_file}"
 }
 
 install_d455_uvc_bind_rule() {
@@ -364,7 +431,9 @@ if [ "${INSTALL_SYSTEM}" = "true" ]; then
 fi
 
 if [ "${APPLY_LOW_RISK_FIXES}" = "true" ]; then
+    install_d455_boot_quirk
     install_d455_power_rule
+    install_d455_power_service
     install_d455_uvc_bind_rule
 fi
 

@@ -174,6 +174,12 @@ CONFIG_FLAG_MAP = {
     "mocap_topic": ["--mocap-topic"],
     "cmd_topic": ["--cmd-topic"],
     "required_topic": ["--required-topic"],
+    "expect_native_ros2": ["--expect-native-ros2"],
+    "expected_robot_namespace": ["--expected-robot-namespace"],
+    "require_odom_mocap_sanity": ["--require-odom-mocap-sanity"],
+    "odom_mocap_sanity_json": ["--odom-mocap-sanity-json"],
+    "odom_mocap_max_error_ratio": ["--odom-mocap-max-error-ratio"],
+    "require_resilient_storage": ["--require-resilient-storage"],
     "min_free_gb": ["--min-free-gb"],
     "expect_camera": ["--expect-camera", "--no-expect-camera"],
     "expected_d455_firmware": ["--expected-d455-firmware"],
@@ -360,7 +366,7 @@ def apply_gate_config(args: argparse.Namespace, argv: Sequence[str]) -> Dict[str
             continue
         if any(flag in supplied for flag in CONFIG_FLAG_MAP[key]):
             continue
-        if key == "required_topic":
+        if key in {"required_topic", "expected_robot_namespace"}:
             if isinstance(value, str):
                 setattr(args, key, split_topics(value))
             elif isinstance(value, list):
@@ -645,6 +651,67 @@ class Doctor:
         self.check_clock()
         self.check_network()
         self.check_wifi_management()
+        self.check_native_ros2_stack()
+
+    def check_native_ros2_stack(self) -> None:
+        result = self.run(
+            "native_ros2_stack",
+            "echo ENV; "
+            "printenv | grep -E '^(ROS_DISTRO|ROS_DOMAIN_ID|ROS_MASTER_URI|ROS_IP|ROS_HOSTNAME)=' || true; "
+            "echo COMMANDS; command -v ros2 || true; command -v rostopic || true; "
+            "echo PROCESSES; "
+            "ps -eo pid=,comm=,args= | awk '$2 !~ /^(bash|sh|awk|grep|pgrep)$/ && "
+            "$0 ~ /(roscore|rosmaster|ros1_bridge|dynamic_bridge|parameter_bridge)/ {print}' || true; "
+            "echo PACKAGES; dpkg -l 2>/dev/null | grep -E 'ros-.*ros1-bridge|ros1_bridge' || true",
+            timeout=10,
+        )
+        code, status, check, summary, next_action = self.classify_native_ros2_stack(
+            self.command_output(result),
+            self.ros_mode,
+            bool(self.args.expect_native_ros2),
+            self.args.profile,
+        )
+        self.add(code, status, check, summary, [result.log], next_action)
+
+    @staticmethod
+    def classify_native_ros2_stack(
+        text: str,
+        ros_mode: str,
+        expect_native_ros2: bool,
+        profile: str,
+    ) -> Tuple[str, str, str, str, str]:
+        bridge_or_ros1 = bool(
+            re.search(r"\b(roscore|rosmaster|ros1_bridge|dynamic_bridge|parameter_bridge)\b", text)
+            or re.search(r"^ROS_MASTER_URI=", text, flags=re.MULTILINE)
+        )
+        ros2_available = ros_mode == "ros2" or bool(re.search(r"(^|/)ros2\b|ROS_DISTRO=(humble|foxy|galactic|iron|jazzy|rolling)", text))
+        if not expect_native_ros2:
+            if bridge_or_ros1:
+                return (
+                    "2.2",
+                    WARN,
+                    "native_ros2_stack",
+                    "ROS1 bridge or ROS1 environment evidence is present; native ROS2 was not required by this gate",
+                    "if this robot is part of the ROS2 dataset fleet, rerun with --expect-native-ros2 and remove the bridge path",
+                )
+            return ("2.2", INFO, "native_ros2_stack", "native ROS2 expectation not enabled for this run", "")
+        if not ros2_available:
+            return (
+                "2.2",
+                FAIL if profile == "dataset" else WARN,
+                "native_ros2_stack",
+                "native ROS2 environment is not proven",
+                "boot the ROS2 image or source the ROS2 workspace before using this robot in the ROS2 fleet",
+            )
+        if bridge_or_ros1:
+            return (
+                "2.2",
+                FAIL if profile == "dataset" else WARN,
+                "native_ros2_stack",
+                "ROS1 bridge/process/environment evidence found on a robot expected to be native ROS2",
+                "remove ros1_bridge/ROS_MASTER_URI from the dataset path, or add an explicit bridge failure branch and latency gate",
+            )
+        return ("2.2", PASS, "native_ros2_stack", "native ROS2 stack proven with no ROS1 bridge evidence", "")
 
     def check_disk(self) -> None:
         usage = shutil.disk_usage(str(Path.home()))
@@ -785,6 +852,7 @@ class Doctor:
         self.check_serial_devices()
         self.check_kernel_logs()
         self.write_mechanical_checklist()
+        self.check_odom_mocap_sanity()
 
     def check_wifi_management(self) -> None:
         result = self.run(
@@ -1072,7 +1140,7 @@ class Doctor:
                     FAIL,
                     "d455_uvc_binding",
                     "D455 video interfaces are not bound to uvcvideo: " + ", ".join(unbound),
-                    "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-uvc-bind, then rerun robot_doctor",
+                    "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-uvc-bind --fix d455-authorize-cycle, then rerun robot_doctor",
                 )
             ]
 
@@ -1131,6 +1199,7 @@ class Doctor:
             return
         result = self.run(
             "d455_imu_hid",
+            "echo HIDRAW_DEVICES; "
             "for h in /sys/class/hidraw/hidraw*; do "
             "[ -e \"$h\" ] || continue; "
             "dev=/dev/$(basename \"$h\"); "
@@ -1138,22 +1207,49 @@ class Doctor:
             "ls -l \"$dev\" 2>/dev/null || true; "
             "udevadm info -q property -n \"$dev\" 2>/dev/null | "
             "grep -E '^(ID_VENDOR_ID|ID_MODEL_ID|ID_VENDOR=|ID_MODEL=|HID_ID|HID_NAME)=' || true; "
+            "done; "
+            "echo IIO_DEVICES; "
+            "for i in /sys/bus/iio/devices/iio:device*; do "
+            "[ -e \"$i\" ] || continue; "
+            "echo IIO=$i PATH=$(readlink -f \"$i\"); "
+            "[ -r \"$i/name\" ] && echo NAME=$(cat \"$i/name\") || true; "
+            "ls -l \"/dev/$(basename \"$i\")\" 2>/dev/null || true; "
             "done",
             timeout=10,
         )
         text = self.command_output(result)
-        d455_hid = bool(re.search(r"(ID_VENDOR_ID=8086|HID_ID=.*00008086|RealSense|D455|Intel)", text, flags=re.IGNORECASE))
-        if d455_hid:
-            self.add("1.1", PASS, "d455_imu_hid", "D455/Intel HID raw IMU path is visible", [result.log])
-            return
-        status = FAIL if self.args.require_imu else WARN
-        self.add(
+        code, status, check, summary, next_action = self.classify_d455_imu_hid(text, self.args.require_imu)
+        self.add(code, status, check, summary, [result.log], next_action)
+
+    @staticmethod
+    def classify_d455_imu_hid(text: str, require_imu: bool) -> Tuple[str, str, str, str, str]:
+        d455_hidraw = bool(
+            re.search(
+                r"(ID_VENDOR_ID=8086|HID_ID=.*00008086|RealSense|D455|Intel)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+        if d455_hidraw:
+            return ("1.1", PASS, "d455_imu_hid", "D455/Intel HID raw IMU path is visible", "")
+
+        d455_iio = bool(
+            re.search(
+                r"(8086:0B5C|HID-SENSOR|iio:device\d+)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+        if d455_iio:
+            return ("1.1", PASS, "d455_imu_hid", "D455 IIO motion sensor path is visible", "")
+
+        status = FAIL if require_imu else WARN
+        return (
             "1.1",
             status,
             "d455_imu_hid",
-            "D455 IMU HID/hidraw path is not visible",
-            [result.log],
-            "replug/reset D455, verify hidraw udev permissions, then run the standalone motion stream gate",
+            "D455 IMU HID/IIO path is not visible",
+            "replug/reset D455, verify hidraw or IIO udev permissions, then run the standalone motion stream gate",
         )
 
     def check_realsense(self) -> None:
@@ -1270,7 +1366,7 @@ class Doctor:
                 "d455_rs_enumerate",
                 "D455 not visible to librealsense",
                 [rs.log],
-                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset once, then rerun robot_doctor; if it persists, do cable/port/camera A/B swap",
+                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset --fix d455-authorize-cycle once, then rerun robot_doctor; if it persists, do cable/port/camera A/B swap",
             )
 
         firmware = self.parse_realsense_firmware(rs_text)
@@ -1301,7 +1397,7 @@ class Doctor:
                 "realsense_control_query",
                 "librealsense control query failed or timed out",
                 [controls.log],
-                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset once, then rerun; persistent failure means USB/kernel/cable/port/camera, not ROS",
+                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset --fix d455-authorize-cycle once, then rerun; persistent failure means USB/kernel/cable/port/camera, not ROS",
             )
 
     def check_realsense_setup_provenance(
@@ -1791,6 +1887,97 @@ class Doctor:
                 "complete the checklist or rerun with --confirm-mechanical after inspection",
             )
 
+    def check_odom_mocap_sanity(self) -> None:
+        evidence_path = getattr(self.args, "odom_mocap_sanity_json", "") or ""
+        if not evidence_path:
+            if self.args.require_odom_mocap_sanity:
+                self.add(
+                    "1.3",
+                    FAIL if self.args.profile == "dataset" else WARN,
+                    "odom_mocap_sanity",
+                    "mandatory odom-vs-MoCap sanity evidence is missing",
+                    next_action="run the 1 m straight-line sanity check and pass its JSON via --odom-mocap-sanity-json before publishable collection",
+                )
+            else:
+                self.add("1.3", INFO, "odom_mocap_sanity", "odom-vs-MoCap sanity evidence not required by this gate")
+            return
+
+        path = Path(evidence_path).expanduser()
+        if not path.exists():
+            self.add(
+                "1.3",
+                FAIL,
+                "odom_mocap_sanity",
+                f"odom-vs-MoCap sanity file does not exist: {path}",
+                next_action="rerun the sanity check or pass the correct JSON evidence path",
+            )
+            return
+        try:
+            data = json.loads(path.read_text())
+        except Exception as exc:
+            self.add(
+                "1.3",
+                FAIL,
+                "odom_mocap_sanity",
+                f"odom-vs-MoCap sanity JSON is unreadable: {exc}",
+                [str(path)],
+                "fix the sanity output file so robot_doctor can parse odom_distance_m and mocap_distance_m",
+            )
+            return
+        code, status, check, summary, next_action = self.classify_odom_mocap_sanity(
+            data,
+            float(self.args.odom_mocap_max_error_ratio),
+            self.args.profile,
+        )
+        self.add(code, status, check, summary, [str(path)], next_action)
+
+    @staticmethod
+    def float_from_keys(data: Dict[str, object], keys: Sequence[str]) -> Optional[float]:
+        for key in keys:
+            if key not in data:
+                continue
+            try:
+                return float(data[key])
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def classify_odom_mocap_sanity(
+        data: Dict[str, object],
+        max_error_ratio: float,
+        profile: str,
+    ) -> Tuple[str, str, str, str, str]:
+        odom = Doctor.float_from_keys(data, ["odom_distance_m", "odom_displacement_m", "odom_m"])
+        mocap = Doctor.float_from_keys(data, ["mocap_distance_m", "gt_distance_m", "mocap_m"])
+        if odom is None or mocap is None:
+            return (
+                "1.3",
+                FAIL if profile == "dataset" else WARN,
+                "odom_mocap_sanity",
+                "sanity JSON must include numeric odom_distance_m and mocap_distance_m",
+                "rerun the 1 m check with numeric odom and MoCap displacement fields",
+            )
+        if abs(mocap) < 1e-6:
+            return (
+                "1.3",
+                FAIL,
+                "odom_mocap_sanity",
+                "MoCap displacement is zero, so odom sanity cannot be evaluated",
+                "fix MoCap feedback or rerun the sanity motion before collecting data",
+            )
+        error_ratio = abs(odom - mocap) / abs(mocap)
+        summary = f"odom={odom:.3f}m mocap={mocap:.3f}m error={error_ratio * 100:.1f}% threshold={max_error_ratio * 100:.1f}%"
+        if error_ratio <= max_error_ratio:
+            return ("1.3", PASS, "odom_mocap_sanity", summary, "")
+        return (
+            "1.3",
+            FAIL if profile == "dataset" else WARN,
+            "odom_mocap_sanity",
+            summary,
+            "do not trust wheel odometry for this robot until wheels/chassis/floor/slip are checked or use MoCap-only localisation for the session",
+        )
+
     def write_d455_swap_checklist(self) -> Path:
         checklist = self.out_dir / "operator_d455_swap_checklist.md"
         checklist.write_text(
@@ -1888,7 +2075,7 @@ class Doctor:
             width=color_width,
             height=color_height,
             fps=fps,
-            enable_motion=self.args.stream_test_motion,
+            enable_motion=False,
         )
         before = self.run("rs_enumerate_before_stream", "timeout 20 rs-enumerate-devices -s 2>&1", timeout=25)
         result = self.run("realsense_stream_probe", probe, timeout=seconds + 25)
@@ -1917,7 +2104,7 @@ class Doctor:
             data,
             seconds,
             fps,
-            self.args.stream_test_motion,
+            False,
         )
         self.add(code, status, check, summary, evidence, next_action)
         if status == FAIL:
@@ -2059,7 +2246,7 @@ PY
                     check,
                     summary,
                     [result.log],
-                    "this isolates the RealSense failure below ROS; rerun after D455 USB reset, then use cable/port/camera A/B evidence if repeatable",
+                    "this isolates the RealSense failure below ROS; rerun after D455 USB reset plus authorize-cycle, then use cable/port/camera A/B evidence if repeatable",
                 )
                 continue
             code, status, check, summary, next_action = self.classify_realsense_single_stream_result(
@@ -2082,7 +2269,7 @@ PY
                 FAIL,
                 "realsense_stream_transport",
                 f"standalone stream probe produced no JSON because it {reason}",
-                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset once, then rerun; persistent failure needs cable/port/camera A/B evidence",
+                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset --fix d455-authorize-cycle once, then rerun; persistent failure needs cable/port/camera A/B evidence",
             )
         return (
             "3.2",
@@ -2116,7 +2303,7 @@ PY
                 FAIL,
                 check,
                 f"standalone {mode}-only stream failed: {detail[:180] or 'unknown exception'}",
-                "rerun after D455 USB reset; if repeatable, keep this as cable/port/camera A/B evidence",
+                "rerun after D455 USB reset plus authorize-cycle; if repeatable, keep this as cable/port/camera A/B evidence",
             )
 
         timeouts = int(data.get("timeouts", 0) or 0)
@@ -2150,7 +2337,7 @@ PY
                 FAIL,
                 check,
                 f"standalone {mode}-only stream delivered no usable frames: {data}",
-                "this is below ROS; rerun after D455 USB reset and use cable/port/camera A/B evidence if repeatable",
+                "this is below ROS; rerun after D455 USB reset plus authorize-cycle and use cable/port/camera A/B evidence if repeatable",
             )
         min_frames = max(1, int(seconds * fps * 0.80))
         if count < min_frames:
@@ -2186,7 +2373,7 @@ PY
                     FAIL,
                     "realsense_stream_exception",
                     f"standalone stream raised RealSense transport error: {detail[:180]}",
-                    "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset once if not already tried; persistent failure after reset needs cable/port/camera A/B evidence, not ROS debugging",
+                    "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset --fix d455-authorize-cycle once if not already tried; persistent failure after reset needs cable/port/camera A/B evidence, not ROS debugging",
                 )
             return (
                 "3.2",
@@ -2203,7 +2390,7 @@ PY
                 FAIL,
                 "realsense_stream_timeouts",
                 f"standalone stream had {timeouts} wait timeouts",
-                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset once if not already tried; persistent failure after reset needs cable/port/camera A/B evidence, not ROS debugging",
+                "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset --fix d455-authorize-cycle once if not already tried; persistent failure after reset needs cable/port/camera A/B evidence, not ROS debugging",
             )
 
         min_frames = max(1, int(seconds * fps * 0.80))
@@ -2215,7 +2402,7 @@ PY
                 FAIL,
                 "realsense_stream_no_frames",
                 f"standalone stream started but delivered zero color/depth frames: {data}",
-                "rerun once after D455 USB reset; if repeatable, inspect rs-enumerate before/after, UVC/xHCI logs, CPU load, and cable/port/camera A/B evidence",
+                "rerun once after D455 USB reset plus authorize-cycle; if repeatable, inspect rs-enumerate before/after, UVC/xHCI logs, CPU load, and cable/port/camera A/B evidence",
             )
         if color_count < min_frames or depth_count < min_frames:
             return (
@@ -2295,6 +2482,7 @@ PY
             self.check_dataset_bringup_context()
             self.check_realsense_ros_runtime_versions()
             self.check_required_live_topics()
+            self.check_dds_discovery()
             self.check_realsense_ros2_failure_class()
             self.check_d455_infra_fps_cap()
             self.check_mocap_live()
@@ -2315,6 +2503,102 @@ PY
             else:
                 topics[line] = ""
         return topics
+
+    def expected_robot_namespaces(self) -> List[str]:
+        namespaces: List[str] = []
+        for value in getattr(self.args, "expected_robot_namespace", []) or []:
+            for item in split_topics(str(value)):
+                item = item.strip()
+                if not item:
+                    continue
+                if not item.startswith("/"):
+                    item = "/" + item
+                namespaces.append(item.rstrip("/") or "/")
+        return list(dict.fromkeys(namespaces))
+
+    def check_dds_discovery(self) -> None:
+        expected = self.expected_robot_namespaces()
+        if self.ros_mode != "ros2":
+            if expected:
+                self.add(
+                    "3.3",
+                    FAIL if self.args.profile == "dataset" else WARN,
+                    "dds_discovery",
+                    "DDS discovery cannot be proven outside ROS2",
+                    next_action="run the fleet discovery gate from a sourced ROS2 environment",
+                )
+            else:
+                self.add("3.3", INFO, "dds_discovery", "DDS discovery gate skipped outside ROS2")
+            return
+        if not expected:
+            self.add(
+                "3.3",
+                INFO,
+                "dds_discovery",
+                "no expected robot namespaces configured for fleet discovery gate",
+                next_action="for fleet runs, pass --expected-robot-namespace for every robot before starting bags",
+            )
+            return
+        result = self.ros_cmd(
+            "(ros2 node list --no-daemon --spin-time 5 2>&1 || ros2 node list 2>&1)",
+            timeout=15,
+            label="ros2_node_list",
+        )
+        code, status, check, summary, next_action = self.classify_dds_discovery(
+            self.command_output(result),
+            expected,
+            os.environ.get("ROS_DISCOVERY_SERVER", ""),
+            self.args.profile,
+        )
+        self.add(code, status, check, summary, [result.log], next_action)
+        if len(expected) > 4 and not os.environ.get("ROS_DISCOVERY_SERVER"):
+            self.add(
+                "3.3",
+                WARN,
+                "dds_discovery_server",
+                f"{len(expected)} robot namespaces configured without ROS_DISCOVERY_SERVER",
+                next_action="use a Fast-DDS discovery server for larger Wi-Fi fleet runs to avoid multicast discovery failures",
+            )
+        elif len(expected) > 4:
+            self.add("3.3", PASS, "dds_discovery_server", "ROS_DISCOVERY_SERVER is configured for >4 robot fleet")
+
+    @staticmethod
+    def classify_dds_discovery(
+        text: str,
+        expected_namespaces: Sequence[str],
+        discovery_server: str,
+        profile: str,
+    ) -> Tuple[str, str, str, str, str]:
+        nodes = [line.strip() for line in text.splitlines() if line.strip().startswith("/")]
+        if not nodes:
+            return (
+                "3.3",
+                FAIL if profile == "dataset" else WARN,
+                "dds_discovery",
+                "ros2 node list returned no nodes",
+                "check ROS_DOMAIN_ID, Wi-Fi multicast, and whether bringup is running on every robot",
+            )
+        missing = [
+            namespace
+            for namespace in expected_namespaces
+            if not any(node == namespace or node.startswith(namespace + "/") for node in nodes)
+        ]
+        if missing:
+            return (
+                "3.3",
+                FAIL if profile == "dataset" else WARN,
+                "dds_discovery",
+                "missing robot namespaces from ROS2 discovery: " + ", ".join(missing),
+                "check ROS_DOMAIN_ID consistency, Wi-Fi multicast, robot bringup, and use ROS_DISCOVERY_SERVER for larger fleets",
+            )
+        server_note = " with discovery server" if discovery_server else ""
+        return (
+            "3.3",
+            PASS,
+            "dds_discovery",
+            f"all {len(expected_namespaces)} expected robot namespaces are visible{server_note}",
+            "",
+        )
 
     def live_topic_specs(self) -> Dict[str, Dict[str, float]]:
         specs = dict(DEFAULT_TOPIC_SPECS)
@@ -2667,6 +2951,8 @@ PY
                 cmd += " --require-gt"
             if self.args.require_imu:
                 cmd += " --require-imu"
+            if self.args.require_resilient_storage:
+                cmd += " --require-resilient-storage"
         result = self.run("bag_validation", cmd, timeout=self.args.bag_validation_timeout)
         if result.rc == 0:
             self.add("3.2", PASS, "bag_validation", "bag validator passed", [result.log, str(json_out)])
@@ -2902,6 +3188,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mocap-topic", default=os.environ.get("MOCAP_TOPIC", ""))
     parser.add_argument("--cmd-topic", default=os.environ.get("CMD_TOPIC", ""))
     parser.add_argument("--required-topic", action="append", default=[])
+    parser.add_argument(
+        "--expect-native-ros2",
+        action="store_true",
+        default=env_bool("EXPECT_NATIVE_ROS2"),
+        help="fail the dataset gate if ROS1 bridge/process/environment evidence is present",
+    )
+    parser.add_argument(
+        "--expected-robot-namespace",
+        action="append",
+        default=split_topics(os.environ.get("EXPECTED_ROBOT_NAMESPACES", os.environ.get("EXPECTED_ROBOT_NAMESPACE", ""))),
+        help="ROS2 namespace that must appear in ros2 node list; repeat for fleet DDS discovery gates",
+    )
+    parser.add_argument(
+        "--require-odom-mocap-sanity",
+        action="store_true",
+        default=env_bool("REQUIRE_ODOM_MOCAP_SANITY"),
+        help="require a 1m odom-vs-MoCap sanity JSON before declaring dataset readiness",
+    )
+    parser.add_argument("--odom-mocap-sanity-json", default=os.environ.get("ODOM_MOCAP_SANITY_JSON", ""))
+    parser.add_argument(
+        "--odom-mocap-max-error-ratio",
+        type=float,
+        default=float(os.environ.get("ODOM_MOCAP_MAX_ERROR_RATIO", "0.10")),
+        help="maximum |odom-mocap|/mocap error for the mecanum odometry sanity gate",
+    )
+    parser.add_argument(
+        "--require-resilient-storage",
+        action="store_true",
+        default=env_bool("REQUIRE_RESILIENT_STORAGE"),
+        help="require MCAP or explicit sqlite_resilient/WAL evidence when validating ROS2 bags",
+    )
     parser.add_argument("--min-free-gb", type=float, default=float(os.environ.get("MIN_FREE_GB", "5")))
     parser.add_argument("--expect-camera", dest="expect_camera", action="store_true")
     parser.add_argument("--no-expect-camera", dest="expect_camera", action="store_false")
@@ -2920,7 +3237,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--strict-versions", action="store_true", default=env_bool("STRICT_VERSIONS"))
     parser.add_argument("--stream-test-seconds", type=int, default=0)
-    parser.add_argument("--stream-test-motion", action="store_true", help="also request accel/gyro in standalone stream probe")
+    parser.add_argument("--stream-test-motion", action="store_true", help="also run the separate standalone D455 motion-only gate")
     parser.add_argument(
         "--d455-motion-test-seconds",
         type=int,

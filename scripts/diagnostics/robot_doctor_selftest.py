@@ -233,6 +233,27 @@ class ValidateRos2BagTests(unittest.TestCase):
             warnings = [item for item in report["results"] if item["level"] == "WARN"]
             self.assertTrue(any(item["check"] == "metadata_yaml" for item in warnings))
 
+    def test_ros2_validator_requires_resilient_sqlite_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bag = Path(tmp) / "plain_sqlite"
+            write_ros2_bag(bag)
+            rc, report = run_validator(bag, {"REQUIRE_RESILIENT_STORAGE": "true"})
+            self.assertEqual(rc, 1)
+            failures = [item for item in report["results"] if item["level"] == "FAIL"]
+            self.assertTrue(any(item["check"] == "storage_resilience" for item in failures))
+
+    def test_ros2_validator_accepts_sqlite_resilient_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bag = Path(tmp) / "resilient_sqlite"
+            write_ros2_bag(bag)
+            (bag.parent / f"{bag.name}_manifest.yaml").write_text(
+                "storage_config_uri: sqlite_resilient.yaml\njournal_mode=WAL\n"
+            )
+            rc, report = run_validator(bag, {"REQUIRE_RESILIENT_STORAGE": "true"})
+            self.assertEqual(rc, 0)
+            failures = [item for item in report["results"] if item["level"] == "FAIL"]
+            self.assertFalse(any(item["check"] == "storage_resilience" for item in failures))
+
     def test_ros2_validator_classifies_mcap_read_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bag = Path(tmp) / "empty.mcap"
@@ -298,6 +319,67 @@ class RobotDoctorParserTests(unittest.TestCase):
         code, status, check, _, _ = Doctor.classify_wifi_management(text, "preflight")
         self.assertEqual((code, status, check), ("3.3", "PASS", "wifi_management"))
 
+    def test_native_ros2_classifier_flags_bridge_when_expected(self) -> None:
+        text = "ENV\nROS_DISTRO=humble\nROS_MASTER_URI=http://localhost:11311\nPROCESSES\n123 ros1_bridge dynamic_bridge\n"
+        code, status, check, summary, next_action = Doctor.classify_native_ros2_stack(
+            text,
+            "ros2",
+            True,
+            "dataset",
+        )
+        self.assertEqual((code, status, check), ("2.2", "FAIL", "native_ros2_stack"))
+        self.assertIn("ROS1", summary)
+        self.assertIn("bridge", next_action)
+
+    def test_native_ros2_classifier_accepts_native_ros2(self) -> None:
+        text = "ENV\nROS_DISTRO=humble\nCOMMANDS\n/opt/ros/humble/bin/ros2\nPROCESSES\n"
+        self.assertEqual(
+            Doctor.classify_native_ros2_stack(text, "ros2", True, "dataset"),
+            ("2.2", "PASS", "native_ros2_stack", "native ROS2 stack proven with no ROS1 bridge evidence", ""),
+        )
+
+    def test_dds_discovery_classifier_requires_expected_namespaces(self) -> None:
+        text = "/agv100/driver\n/agv101/camera\n"
+        code, status, check, summary, _ = Doctor.classify_dds_discovery(
+            text,
+            ["/agv100", "/agv101", "/agv102"],
+            "",
+            "dataset",
+        )
+        self.assertEqual((code, status, check), ("3.3", "FAIL", "dds_discovery"))
+        self.assertIn("/agv102", summary)
+
+    def test_dds_discovery_classifier_passes_all_namespaces(self) -> None:
+        text = "/agv100/driver\n/agv101/camera\n"
+        code, status, check, summary, _ = Doctor.classify_dds_discovery(
+            text,
+            ["/agv100", "/agv101"],
+            "192.168.50.100:11811",
+            "dataset",
+        )
+        self.assertEqual((code, status, check), ("3.3", "PASS", "dds_discovery"))
+        self.assertIn("discovery server", summary)
+
+    def test_odom_mocap_sanity_classifier_passes_within_threshold(self) -> None:
+        self.assertEqual(
+            Doctor.classify_odom_mocap_sanity(
+                {"odom_distance_m": 1.04, "mocap_distance_m": 1.0},
+                0.10,
+                "dataset",
+            )[0:3],
+            ("1.3", "PASS", "odom_mocap_sanity"),
+        )
+
+    def test_odom_mocap_sanity_classifier_fails_slip(self) -> None:
+        code, status, check, summary, next_action = Doctor.classify_odom_mocap_sanity(
+            {"odom_distance_m": 1.25, "mocap_distance_m": 1.0},
+            0.10,
+            "dataset",
+        )
+        self.assertEqual((code, status, check), ("1.3", "FAIL", "odom_mocap_sanity"))
+        self.assertIn("25.0%", summary)
+        self.assertIn("wheel odometry", next_action)
+
     def test_usb_power_classifier_detects_d455_autosuspend(self) -> None:
         text = "USB_DEVICE=/sys/bus/usb/devices/2-1\nidVendor=8086\nidProduct=0b5c\nproduct=Intel RealSense D455\nspeed=5000\npower_control=auto\npower_autosuspend_delay_ms=2000\nCMDLINE\nquiet splash\n"
         results = Doctor.classify_usb_power_policy(text, "dataset")
@@ -332,6 +414,27 @@ class RobotDoctorParserTests(unittest.TestCase):
         self.assertEqual(results[0][0:3], ("2.1", "FAIL", "d455_uvc_binding"))
         self.assertIn("2-2:1.0=none", results[0][3])
         self.assertIn("d455-uvc-bind", results[0][4])
+
+    def test_d455_imu_hid_accepts_iio_motion_devices(self) -> None:
+        text = (
+            "IIO=/sys/bus/iio/devices/iio:device0 "
+            "PATH=/sys/devices/platform/scb/usb2/2-2/2-2:1.5/"
+            "0003:8086:0B5C.0003/HID-SENSOR-200073.1.auto/iio:device0\n"
+            "NAME=accel_3d\n"
+        )
+        self.assertEqual(
+            Doctor.classify_d455_imu_hid(text, require_imu=True),
+            ("1.1", "PASS", "d455_imu_hid", "D455 IIO motion sensor path is visible", ""),
+        )
+
+    def test_d455_imu_hid_fails_when_required_and_absent(self) -> None:
+        code, status, check, summary, next_action = Doctor.classify_d455_imu_hid(
+            "HIDRAW_DEVICES\nIIO_DEVICES\n",
+            require_imu=True,
+        )
+        self.assertEqual((code, status, check), ("1.1", "FAIL", "d455_imu_hid"))
+        self.assertIn("HID/IIO", summary)
+        self.assertIn("standalone motion", next_action)
 
     def test_realsense_usb_speed_parser(self) -> None:
         text = "T: Bus=02 Lev=01 Prnt=01 Port=01 Cnt=01 Dev#= 2 Spd=5000\nP: Vendor=8086 ProdID=0b5c\n"
@@ -731,6 +834,12 @@ class RobotDoctorConfigTests(unittest.TestCase):
                         "expected_d455_firmware": "5.17.0.10",
                         "expected_realsense_ros_driver": "4.57.7",
                         "expected_realsense_ros_librealsense": "2.57.7",
+                        "expect_native_ros2": True,
+                        "expected_robot_namespace": ["/agv100", "/agv101"],
+                        "require_odom_mocap_sanity": True,
+                        "odom_mocap_sanity_json": "/tmp/odom_mocap.json",
+                        "odom_mocap_max_error_ratio": 0.1,
+                        "require_resilient_storage": True,
                         "required_topic": ["/scan", "/odom"],
                     }
                 )
@@ -749,6 +858,12 @@ class RobotDoctorConfigTests(unittest.TestCase):
             self.assertEqual(args.expected_d455_firmware, "5.17.0.10")
             self.assertEqual(args.expected_realsense_ros_driver, "4.57.7")
             self.assertEqual(args.expected_realsense_ros_librealsense, "2.57.7")
+            self.assertTrue(args.expect_native_ros2)
+            self.assertEqual(args.expected_robot_namespace, ["/agv100", "/agv101"])
+            self.assertTrue(args.require_odom_mocap_sanity)
+            self.assertEqual(args.odom_mocap_sanity_json, "/tmp/odom_mocap.json")
+            self.assertEqual(args.odom_mocap_max_error_ratio, 0.1)
+            self.assertTrue(args.require_resilient_storage)
             self.assertEqual(args.required_topic, ["/scan", "/odom"])
 
     def test_cli_overrides_config(self) -> None:

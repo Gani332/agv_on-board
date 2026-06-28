@@ -7,6 +7,7 @@
 #   d455-autosuspend            Persistently disables USB autosuspend for Intel RealSense D455.
 #   d455-uvc-bind               Force-binds unbound D455 video interfaces to uvcvideo.
 #   d455-usb-reset              Sends USBDEVFS_RESET to the connected D455.
+#   d455-authorize-cycle        Deauthorizes/reauthorizes the D455 USB device to recover wedged UVC binding.
 #   realsense-standalone-tools  Installs/pins standalone Intel librealsense tools.
 
 set -euo pipefail
@@ -22,16 +23,19 @@ Usage:
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --fix d455-autosuspend
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --fix d455-uvc-bind
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --fix d455-usb-reset
+  bash scripts/diagnostics/apply_robot_doctor_fix.sh --fix d455-authorize-cycle
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --fix realsense-standalone-tools
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-autosuspend
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-uvc-bind
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset
+  bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-authorize-cycle
   bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix realsense-standalone-tools
 
 For non-interactive SSH automation:
   SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-autosuspend
   SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-uvc-bind
   SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset
+  SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-authorize-cycle
   SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix realsense-standalone-tools
 
 EOF
@@ -117,6 +121,78 @@ sudo_write_sysfs() {
     fi
 }
 
+install_d455_boot_quirk() {
+    cmdline_file="/boot/firmware/cmdline.txt"
+    if [ ! -f "${cmdline_file}" ]; then
+        cmdline_file="/boot/cmdline.txt"
+    fi
+    if [ ! -f "${cmdline_file}" ]; then
+        log "WARN: boot cmdline file not found; cannot install usbcore D455 quirk"
+        return
+    fi
+    if grep -qw "usbcore.quirks=8086:0b5c:kn" "${cmdline_file}"; then
+        log "usbcore.quirks=8086:0b5c:kn already present in ${cmdline_file}"
+        return
+    fi
+    if [ "${APPLY}" = true ]; then
+        sudo_run cp "${cmdline_file}" "${cmdline_file}.bak.$(date +%Y%m%d_%H%M%S)"
+        sudo_run python3 - "${cmdline_file}" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+parts = [item for item in path.read_text().strip().split() if not item.startswith("usbcore.quirks=")]
+parts.append("usbcore.quirks=8086:0b5c:kn")
+path.write_text(" ".join(parts) + "\n")
+PY
+        log "installed usbcore.quirks=8086:0b5c:kn in ${cmdline_file}; reboot required"
+    else
+        log "DRY-RUN: add usbcore.quirks=8086:0b5c:kn to ${cmdline_file}"
+    fi
+}
+
+install_d455_power_service() {
+    script_file="/usr/local/sbin/orkar-d455-power.sh"
+    service_file="/etc/systemd/system/orkar-d455-power.service"
+    script_content='#!/usr/bin/env bash
+set -euo pipefail
+for _ in $(seq 1 30); do
+  found=false
+  for d in /sys/bus/usb/devices/*; do
+    [ -f "${d}/idVendor" ] || continue
+    [ -f "${d}/idProduct" ] || continue
+    [ "$(cat "${d}/idVendor" 2>/dev/null)" = "8086" ] || continue
+    [ "$(cat "${d}/idProduct" 2>/dev/null)" = "0b5c" ] || continue
+    found=true
+    [ -f "${d}/power/control" ] && echo on > "${d}/power/control" || true
+    [ -f "${d}/power/autosuspend_delay_ms" ] && echo -1 > "${d}/power/autosuspend_delay_ms" || true
+  done
+  "${found}" && exit 0
+  sleep 1
+done
+exit 0'
+    service_content='[Unit]
+Description=Disable runtime autosuspend for Intel RealSense D455
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/orkar-d455-power.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target'
+    if [ "${APPLY}" = true ]; then
+        sudo_write_file "${script_file}" 0755 "${script_content}"
+        sudo_write_file "${service_file}" 0644 "${service_content}"
+        sudo_run systemctl daemon-reload
+        sudo_run systemctl enable --now orkar-d455-power.service >/dev/null || true
+        log "installed ${service_file}"
+    else
+        log "DRY-RUN: install ${script_file} and ${service_file}"
+    fi
+}
+
 find_d455_sysfs() {
     for d in /sys/bus/usb/devices/*; do
         [ -f "${d}/idVendor" ] || continue
@@ -130,6 +206,7 @@ find_d455_sysfs() {
 
 fix_d455_autosuspend() {
     log "Fix: d455-autosuspend"
+    install_d455_boot_quirk
     mapfile -t d455_devices < <(find_d455_sysfs)
     if [ "${#d455_devices[@]}" -eq 0 ]; then
         echo "ERROR: no D455 found in /sys/bus/usb/devices (8086:0b5c)." >&2
@@ -146,9 +223,11 @@ ACTION=="change", SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b
     if [ "${APPLY}" = true ]; then
         sudo_write_file "${rule_file}" 0644 "${rule_content}"
         sudo_run udevadm control --reload-rules
+        install_d455_power_service
     else
         log "Would write ${rule_file}:"
         printf '%s\n' "${rule_content}"
+        install_d455_power_service
     fi
 
     for d in "${d455_devices[@]}"; do
@@ -293,6 +372,54 @@ PY
     log "Done. Re-run robot_doctor and expect rs-enumerate/control-query evidence to improve if the fault was transient."
 }
 
+fix_d455_authorize_cycle() {
+    log "Fix: d455-authorize-cycle"
+    mapfile -t d455_devices < <(find_d455_sysfs)
+    if [ "${#d455_devices[@]}" -eq 0 ]; then
+        echo "ERROR: no D455 found in /sys/bus/usb/devices (8086:0b5c)." >&2
+        echo "       If lsusb also cannot see the camera, fix cable/port/power first." >&2
+        exit 1
+    fi
+
+    for d in "${d455_devices[@]}"; do
+        if [ ! -f "${d}/authorized" ]; then
+            echo "ERROR: ${d}/authorized is missing; cannot cycle USB authorization." >&2
+            exit 1
+        fi
+        if [ "${APPLY}" = true ]; then
+            log "RUN: deauthorize ${d}"
+            sudo_write_sysfs "${d}/authorized" "0"
+            sleep 4
+            log "RUN: reauthorize ${d}"
+            sudo_write_sysfs "${d}/authorized" "1"
+        else
+            log "DRY-RUN: write 0 then 1 to ${d}/authorized"
+        fi
+    done
+
+    if [ "${APPLY}" = true ]; then
+        sleep 8
+        mapfile -t d455_devices_after < <(find_d455_sysfs)
+        for d in "${d455_devices_after[@]}"; do
+            if [ -f "${d}/power/control" ]; then
+                sudo_write_sysfs "${d}/power/control" "on"
+                log "D455 ${d} power/control=$(cat "${d}/power/control" 2>/dev/null || true)"
+            fi
+            if [ -f "${d}/power/autosuspend_delay_ms" ]; then
+                sudo_write_sysfs "${d}/power/autosuspend_delay_ms" "-1"
+                log "D455 ${d} power/autosuspend_delay_ms=$(cat "${d}/power/autosuspend_delay_ms" 2>/dev/null || true)"
+            fi
+        done
+        log "D455 USB tree after authorize cycle:"
+        lsusb -t | sed -n '1,80p'
+        if command -v rs-enumerate-devices >/dev/null 2>&1; then
+            timeout 20 rs-enumerate-devices -s 2>&1 || true
+        fi
+    fi
+
+    log "Done. Re-run robot_doctor and expect rs-enumerate and d455_uvc_binding to recover if the fault was a wedged USB authorization state."
+}
+
 fix_realsense_standalone_tools() {
     log "Fix: realsense-standalone-tools"
     version="${REALSENSE_APT_VERSION:-2.58.1-0~realsense.8235}"
@@ -396,6 +523,9 @@ for fix in "${FIXES[@]}"; do
             ;;
         d455-usb-reset)
             fix_d455_usb_reset
+            ;;
+        d455-authorize-cycle)
+            fix_d455_authorize_cycle
             ;;
         realsense-standalone-tools)
             fix_realsense_standalone_tools

@@ -79,6 +79,7 @@ class Audit:
             "scripts/logging/validate_bag.py",
             "scripts/logging/validate_ros2_bag.py",
             "configs/robot_doctor_dataset_gate.json",
+            "configs/sqlite_resilient.yaml",
             "docs/ROBOT_DIAGNOSTIC_PIPELINE.md",
             "docs/ROBOT_DEBUG_PIPELINE_COVERAGE_AUDIT.md",
             "robot_failure_modes_v3.png",
@@ -152,7 +153,7 @@ class Audit:
                 "kernel_usb_disconnect",
                 "d455_physical_swap_evidence",
             ],
-            "1.3": ["mechanical_operator_check"],
+            "1.3": ["mechanical_operator_check", "odom_mocap_sanity"],
             "2.1": [
                 "d455_usb_speed",
                 "d455_uvc_binding",
@@ -168,11 +169,28 @@ class Audit:
                 "realsense_ros_driver_version",
                 "d455_infra_fps_cap",
                 "dataset_bringup_context",
+                "native_ros2_stack",
             ],
             "2.3": ["topic_present", "topic_rate", "ros_graph_skipped"],
-            "3.1": ["disk_free"],
-            "3.2": ["bag_validation", "bag_validation_missing", "realsense_stream_test", "robot_doctor_execution", "diagnostic_lock"],
-            "3.3": ["clock_sync", "chrony_offset", "wifi_management", "mocap_topic", "anchors_operator_check", "remote_ssh_interrupted"],
+            "3.1": ["disk_free", "stale_recorder"],
+            "3.2": [
+                "bag_validation",
+                "bag_validation_missing",
+                "realsense_stream_test",
+                "robot_doctor_execution",
+                "diagnostic_lock",
+                "require_resilient_storage",
+            ],
+            "3.3": [
+                "clock_sync",
+                "chrony_offset",
+                "wifi_management",
+                "mocap_topic",
+                "anchors_operator_check",
+                "remote_ssh_interrupted",
+                "dds_discovery",
+                "dds_discovery_server",
+            ],
         }
         for code, patterns in required_by_branch.items():
             self.require_source_patterns(f"branch_{code}_coverage", patterns, files)
@@ -197,6 +215,10 @@ class Audit:
             "stream_test_motion": True,
             "d455_motion_test_seconds": 10,
             "max_clock_offset_ms": 1.0,
+            "expect_native_ros2": True,
+            "require_odom_mocap_sanity": True,
+            "odom_mocap_max_error_ratio": 0.1,
+            "require_resilient_storage": True,
         }
         mismatches = [
             f"{key}={config.get(key)!r}"
@@ -268,6 +290,18 @@ class Audit:
             ["scripts/diagnostics/robot_doctor.py"],
         )
         self.require_source_patterns(
+            "remediation_script_guards",
+            [
+                "d455-autosuspend",
+                "d455-uvc-bind",
+                "d455-usb-reset",
+                "d455-authorize-cycle",
+                "authorized",
+                "autosuspend_delay_ms",
+            ],
+            ["scripts/diagnostics/apply_robot_doctor_fix.sh"],
+        )
+        self.require_source_patterns(
             "fleet_summary_guards",
             [
                 "--check-evidence",
@@ -314,6 +348,10 @@ class Audit:
                 "find_mcap_files",
                 "metadata_yaml",
                 "timestamp_monotonic",
+                "storage_resilience",
+                "sqlite_resilient",
+                "journal_mode=wal",
+                "--require-resilient-storage",
             ],
             ["scripts/logging/validate_ros2_bag.py"],
         )
@@ -346,6 +384,13 @@ class Audit:
                 "viewer_passes_ros2_fails",
                 "d455_infra_fps_cap",
                 "chrony_offset",
+                "native_ros2_stack",
+                "odom_mocap_sanity",
+                "dds_discovery",
+                "storage_resilience",
+                "ROS_DISCOVERY_SERVER",
+                "sqlite_resilient",
+                "MCAP",
                 "READY:",
                 "FAILED_STAGE:",
             ],
@@ -374,6 +419,10 @@ class Audit:
                 "test_ros2_validator_warns_when_metadata_yaml_missing",
                 "test_non_monotonic_storage_timestamp_fails",
                 "test_operator_decision_block_matches_target_shape",
+                "test_native_ros2_classifier_flags_bridge_when_expected",
+                "test_odom_mocap_sanity_classifier_fails_slip",
+                "test_dds_discovery_classifier_requires_expected_namespaces",
+                "test_ros2_validator_requires_resilient_sqlite_when_configured",
             ],
             ["scripts/diagnostics/robot_doctor_selftest.py"],
         )

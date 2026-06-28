@@ -209,13 +209,13 @@ bag evidence is a hard failure instead of a warning.
 |---|---|---|
 | `1.1` | Sensor device health | D455 USB presence, firmware, serial devices for LiDAR/base |
 | `1.2` | Physical infrastructure | USB speed, USB disconnects, Pi throttle/brownout, power/thermal snapshots |
-| `1.3` | Mechanical setup | Operator checklist for mounts, marker rigidity, wheels/chassis/slip |
+| `1.3` | Mechanical setup | Operator checklist for mounts, marker rigidity, wheels/chassis/slip, odom-vs-MoCap sanity |
 | `2.1` | OS/kernel/USB | `/dev` permissions, librealsense visibility/control query, UVC/xHCI/dmesg classification, D455 `uvcvideo` binding, autosuspend/boot quirk |
 | `2.2` | Drivers/launch config | librealsense packages, RealSense tools, RealSense ROS package/runtime versions, ROS environment, optional bringup command |
 | `2.3` | ROS data quality | Topic presence, types, rates, IMU rate, live MoCap topic/rate |
-| `3.1` | Recording pipeline | Disk space, stale recorders, bag path/readability |
+| `3.1` | Recording pipeline | Disk space, stale recorders, bag path/readability, resilient ROS2 storage evidence |
 | `3.2` | Validation pipeline | RealSense standalone stream gate, ROS1/ROS2 bag validation, metadata/rate/gap checks |
-| `3.3` | Experiment execution | Clock sync, network/DNS, Wi-Fi management state, MoCap/operator confirmations, anchor/obstacle confirmations |
+| `3.3` | Experiment execution | Clock sync, network/DNS, Wi-Fi management state, MoCap/operator confirmations, DDS discovery, anchor/obstacle confirmations |
 
 ## Interpreting Results
 
@@ -258,10 +258,11 @@ keeps old boot-history messages from being treated as current evidence while
 still catching errors triggered by `rs-enumerate-devices`, the standalone stream
 gate, or live bringup.
 
-If the combined standalone RGB-D stream gate fails, `robot_doctor` also runs
-short isolation probes for color-only, depth-only, and motion-only when IMU is
-required. This separates cases such as "color works but depth delivers zero
-frames" from generic camera failure.
+The standalone RGB-D gate and D455 motion/IMU gate are separate on purpose:
+RealSense motion streams are asynchronous, so requiring RGB-D and motion in one
+`wait_for_frames` loop can create false failures. If RGB-D fails, `robot_doctor`
+also runs short color-only and depth-only isolation probes. If IMU is required,
+the motion-only gate proves gyro/accel independently.
 
 The current ROS 2 dataset gate standard is:
 
@@ -280,12 +281,12 @@ USB gate:                       USB 3.x / 5000 Mb/s
 |---|---|---|
 | `1.1 d455_enumeration` | Camera is not visible as a USB device | Reseat cable, check Pi USB3 port, swap known-good camera/cable |
 | `2.1 d455_usb_speed` | Camera is visible but running below USB3 | Move to blue USB3 port, remove extension, replace cable |
-| `2.1 d455_uvc_binding` | Camera is USB3-present but D455 Video interfaces are not bound to `uvcvideo`; RealSense tools may say no device | Run the targeted `d455-uvc-bind` fix, then rerun doctor |
-| `1.1 d455_imu_hid` | D455 enumerates, but the separate HID/raw IMU path is not proven | Replug/reset D455, verify `hidraw` udev permissions, then run the standalone motion gate |
-| `2.1 realsense_control_query` | `rs-enumerate-devices -c` fails, so the fault is below ROS | Try the targeted `d455-usb-reset` fix once, then inspect UVC/xHCI logs and do cable/port/camera swap if it persists |
+| `2.1 d455_uvc_binding` | Camera is USB3-present but D455 Video interfaces are not bound to `uvcvideo`; RealSense tools may say no device | Run `d455-uvc-bind` then `d455-authorize-cycle`, then rerun doctor |
+| `1.1 d455_imu_hid` | D455 enumerates, but the separate HID/IIO IMU path is not proven | Replug/reset D455, verify `hidraw` or IIO udev permissions, then run the standalone motion gate |
+| `2.1 realsense_control_query` | `rs-enumerate-devices -c` fails, so the fault is below ROS | Try `d455-usb-reset` plus `d455-authorize-cycle` once, then inspect UVC/xHCI logs and do cable/port/camera swap if it persists |
 | `2.1 realsense_depth_stream` / `2.1 realsense_color_stream` | Standalone per-stream isolation shows a specific video path does not deliver frames | Treat as below ROS; reset once, then collect cable/port/camera A/B evidence if repeatable |
 | `1.1 realsense_motion_stream_gate` | Standalone D455 motion/IMU stream does not produce gyro/accel frames | Fix the HID/motion path before relying on camera IMU data |
-| `2.1 realsense_stream_transport` | Standalone stream probe hangs or reports UVC/librealsense transport errors | Try the targeted `d455-usb-reset` fix once, then do cable/port/camera A/B swap if it persists |
+| `2.1 realsense_stream_transport` | Standalone stream probe hangs or reports UVC/librealsense transport errors | Try `d455-usb-reset` plus `d455-authorize-cycle` once, then do cable/port/camera A/B swap if it persists |
 | `2.1 viewer_passes_ros2_fails` | Standalone RealSense streaming passes, but ROS2 camera topics are absent | Check `realsense2_camera` launch, udev rules, wrapper version, and LibRealSense runtime |
 | `1.2 d455_physical_swap_evidence` | A D455 physical-path failure exists but camera/cable/host-port A/B evidence is not recorded | Complete the generated D455 swap checklist, then rerun with swap confirmations or notes |
 | `2.1 d455_usb_autosuspend` | Linux may autosuspend the D455 during long runs | Set D455 USB `power/control=on` and rerun doctor |
@@ -299,14 +300,19 @@ USB gate:                       USB 3.x / 5000 Mb/s
 | `2.2 realsense_ros_librealsense` | Running RealSense ROS node reports a different runtime SDK, or the runtime could not be proven | Restart bringup with logs and standardize the RealSense ROS build/runtime SDK |
 | `2.2 d455_infra_fps_cap` | Infra stream is capped around 15 Hz when higher FPS was requested | Run `ros2 param set /camera/camera depth_module.enable_auto_exposure true`, restart the camera node, and rerun doctor |
 | `2.2 dataset_bringup_context` | The dataset gate was run without live required sensor topics, or bringup ran but did not publish them | Start sensors first, or rerun doctor with `--bringup-cmd` so launch logs are captured |
+| `2.2 native_ros2_stack` | A robot expected to be native ROS2 shows ROS1 bridge/process/environment evidence, or native ROS2 is not proven | Boot/source the ROS2 image and remove the bridge path, or add explicit bridge latency/message gates before using it |
 | `2.3 topic_present` | ROS graph is missing a required stream | Fix launch/remap/driver before recording |
 | `2.3 topic_rate` | Stream exists but rate is too low | Check CPU load, USB bandwidth, driver config, then lower load only if hardware is clean |
 | `3.1 disk_free` | Bag recording may fail or truncate | Clear `~/agv_data` or use larger storage |
+| `3.1 storage_resilience` | ROS2 bag uses SQLite `.db3` without recorded `sqlite_resilient`/WAL evidence when resilient storage is required | Record with MCAP or ensure the session manifest records the sqlite resilient/WAL storage config |
 | `3.2 bag_validation` | Recorded data is missing/low-rate/corrupt | Use validator output; rerun only after fixing the failed branch |
 | `3.3 clock_sync` / `3.3 chrony_offset` | Multi-robot timestamps are not trustworthy or parsed Chrony offset exceeds the gate threshold | Repair chrony/NTP before publishable collection |
 | `3.3 wifi_management` | Manual `wpa_supplicant`/`dhclient` conflicts or unstable Wi-Fi management | Use one persistent NetworkManager/netplan path and reboot-test SSH |
 | `3.3 remote_ssh_interrupted` | Remote wrapper lost SSH before robot_doctor wrote `summary.json` | Check Wi-Fi signal, robot power, and partial copied logs before rerunning |
 | `3.3 mocap_topic` | Ground truth is absent or wrong | Fix OptiTrack/NatNet bridge, ROS domain, or rigid-body name |
+| `3.3 dds_discovery` | Not all expected robot namespaces are visible in `ros2 node list` | Check ROS_DOMAIN_ID, robot bringup, Wi-Fi multicast, and switch larger fleets to `ROS_DISCOVERY_SERVER` |
+| `3.3 dds_discovery_server` | More than four robots are configured without a Fast-DDS discovery server | Run a discovery server and set `ROS_DISCOVERY_SERVER` on each robot before fleet collection |
+| `1.3 odom_mocap_sanity` | The required 1 m `/odom` vs MoCap check is missing or exceeds 10% error | Fix wheels/chassis/floor slip, reduce speed, or treat wheel odom as unreliable for that session |
 
 ## Targeted Remediation
 
@@ -350,9 +356,21 @@ SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply 
 bash scripts/diagnostics/robot_doctor.sh agv102 --profile preflight
 ```
 
-If the same control-query failure returns immediately after a USB reset, treat
-it as persistent USB/camera/host-path evidence and move to the physical A/B swap
-branch.
+If `USBDEVFS_RESET` leaves the D455 present on USB3 but the video interfaces
+remain unbound, use the stronger authorization cycle:
+
+```bash
+cd ~/slam_project
+bash scripts/diagnostics/apply_robot_doctor_fix.sh --fix d455-authorize-cycle
+SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-authorize-cycle
+bash scripts/diagnostics/robot_doctor.sh agv102 --profile preflight
+```
+
+This writes `0` then `1` to the D455 sysfs `authorized` file, waits for
+reenumeration, reapplies `power/control=on` and `autosuspend_delay_ms=-1`, and
+checks `rs-enumerate-devices`. If the same control-query failure returns after
+reset plus authorize-cycle, treat it as persistent USB/camera/host-path
+evidence and move to the physical A/B swap branch.
 
 ### D455 Physical A/B Swap Evidence
 
