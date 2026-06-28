@@ -67,6 +67,7 @@ class Audit:
         files = [
             "scripts/diagnostics/robot_doctor.py",
             "scripts/diagnostics/robot_doctor.sh",
+            "scripts/diagnostics/dataset_ready_gate.sh",
             "scripts/diagnostics/validate_robot_doctor_report.py",
             "scripts/diagnostics/fleet_doctor_summary.py",
             "scripts/diagnostics/run_robot_doctor_remote.sh",
@@ -93,6 +94,7 @@ class Audit:
         executable_files = [
             "scripts/diagnostics/robot_doctor.py",
             "scripts/diagnostics/robot_doctor.sh",
+            "scripts/diagnostics/dataset_ready_gate.sh",
             "scripts/diagnostics/run_robot_doctor_remote.sh",
             "scripts/diagnostics/run_fleet_doctor_remote.sh",
             "scripts/diagnostics/apply_robot_doctor_fix.sh",
@@ -273,8 +275,24 @@ class Audit:
                 "diagnostic_pipeline_audit.py",
                 "dataset_run_audit.py",
                 "setup_robot_ros2.sh",
+                "dataset_ready_gate.sh",
             ],
             ["scripts/diagnostics/run_robot_doctor_remote.sh"],
+        )
+        self.require_source_patterns(
+            "dataset_ready_gate_guards",
+            [
+                "mode: read-only",
+                "validate_robot_doctor_report.py",
+                "READY_TO_RECORD:",
+                "POST_RUN_DATASET_READY:",
+                "FAILED_STAGE:",
+                "NEXT_ACTION:",
+                "--expected-d455-serial",
+                "dataset_ready",
+                "no fixes",
+            ],
+            ["scripts/diagnostics/dataset_ready_gate.sh"],
         )
         self.require_source_patterns(
             "doctor_process_guards",

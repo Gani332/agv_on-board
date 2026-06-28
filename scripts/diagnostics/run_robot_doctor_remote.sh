@@ -112,6 +112,7 @@ echo "== deploy diagnostic pipeline =="
 run_scp \
     "${ROOT}/scripts/diagnostics/robot_doctor.py" \
     "${ROOT}/scripts/diagnostics/robot_doctor.sh" \
+    "${ROOT}/scripts/diagnostics/dataset_ready_gate.sh" \
     "${ROOT}/scripts/diagnostics/robot_doctor_selftest.py" \
     "${ROOT}/scripts/diagnostics/fleet_doctor_summary.py" \
     "${ROOT}/scripts/diagnostics/apply_robot_doctor_fix.sh" \

@@ -182,6 +182,7 @@ CONFIG_FLAG_MAP = {
     "require_resilient_storage": ["--require-resilient-storage"],
     "min_free_gb": ["--min-free-gb"],
     "expect_camera": ["--expect-camera", "--no-expect-camera"],
+    "expected_d455_serial": ["--expected-d455-serial"],
     "expected_d455_firmware": ["--expected-d455-firmware"],
     "expected_librealsense": ["--expected-librealsense"],
     "expected_realsense_ros_driver": ["--expected-realsense-ros-driver"],
@@ -1369,6 +1370,32 @@ class Doctor:
                 "run SUDO_PASSWORD=ubuntu bash scripts/diagnostics/apply_robot_doctor_fix.sh --apply --fix d455-usb-reset --fix d455-authorize-cycle once, then rerun robot_doctor; if it persists, do cable/port/camera A/B swap",
             )
 
+        serial = self.parse_realsense_serial(rs_text)
+        expected_serial = self.args.expected_d455_serial or os.environ.get("EXPECTED_D455_SERIAL", "")
+        if expected_serial and serial and serial != expected_serial:
+            status = FAIL if self.args.profile == "dataset" or self.args.strict_versions else WARN
+            self.add(
+                "1.1",
+                status,
+                "d455_serial_identity",
+                f"D455 serial {serial}, expected {expected_serial}",
+                [rs.log],
+                "attach the assigned D455/cable pair for this robot or update the expected serial only after a deliberate hardware swap",
+            )
+        elif expected_serial and serial == expected_serial:
+            self.add("1.1", PASS, "d455_serial_identity", f"D455 serial {serial}", [rs.log])
+        elif expected_serial:
+            self.add(
+                "1.1",
+                FAIL if self.args.expect_camera else WARN,
+                "d455_serial_identity",
+                f"D455 serial could not be parsed, expected {expected_serial}",
+                [rs.log],
+                "inspect rs-enumerate-devices output and rerun after the camera enumerates cleanly",
+            )
+        elif serial:
+            self.add("1.1", INFO, "d455_serial_identity", f"D455 serial {serial}", [rs.log])
+
         firmware = self.parse_realsense_firmware(rs_text)
         expected_fw = self.args.expected_d455_firmware or os.environ.get("EXPECTED_D455_FIRMWARE", "")
         if expected_fw and firmware and firmware != expected_fw:
@@ -1702,6 +1729,24 @@ class Doctor:
                 versions = re.findall(r"\b\d+\.\d+\.\d+\.\d+\b", line)
                 if versions:
                     return versions[-1]
+        return None
+
+    @staticmethod
+    def parse_realsense_serial(text: str) -> Optional[str]:
+        for pattern in [
+            r"Serial Number\s*:?\s*([0-9]{6,})",
+            r"Intel RealSense D455\s+([0-9]{6,})\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+",
+            r"D455\s+([0-9]{6,})\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+",
+        ]:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1)
+        for line in text.splitlines():
+            if "RealSense" not in line and "D455" not in line:
+                continue
+            numbers = re.findall(r"\b[0-9]{6,}\b", line)
+            if numbers:
+                return numbers[0]
         return None
 
     @staticmethod
@@ -3223,6 +3268,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expect-camera", dest="expect_camera", action="store_true")
     parser.add_argument("--no-expect-camera", dest="expect_camera", action="store_false")
     parser.set_defaults(expect_camera=True)
+    parser.add_argument("--expected-d455-serial", default=os.environ.get("EXPECTED_D455_SERIAL", ""))
     parser.add_argument("--expected-d455-firmware", default=os.environ.get("EXPECTED_D455_FIRMWARE", ""))
     parser.add_argument("--expected-librealsense", default=os.environ.get("EXPECTED_LIBREALSENSE", ""))
     parser.add_argument(

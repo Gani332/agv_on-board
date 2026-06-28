@@ -6,7 +6,60 @@ The goal is not to make hardware failures impossible. The goal is that a robot i
 either dataset-ready or the failure is classified with evidence under one of the
 failure-tree branches.
 
-## One-Command Preflight
+## Deterministic Operating Rule
+
+Normal dataset operation is read-only:
+
+1. Provision/fix a robot only during setup or after a blocker has been
+   classified.
+2. Before collecting data, run the pre-run dataset readiness gate.
+3. Collect data only when the gate prints `READY_TO_RECORD: true`.
+4. After recording, run the post-run bag audit before calling the bag
+   publishable.
+
+The readiness gate does not install packages, reset USB devices, run repair
+scripts, or mutate the robot. It either proves that the robot is ready under the
+configured pre-run gate or returns the exact failure-tree branch, evidence logs,
+and next action.
+
+Run this after switching on a robot:
+
+```bash
+cd ~/slam_project
+bash scripts/diagnostics/dataset_ready_gate.sh agv102 \
+  --expected-d455-serial <assigned_d455_serial> \
+  --mocap-topic /optitrack/rigid_bodies/orkar_agv102 \
+  --cmd-topic /agv102/cmd_vel \
+  --strict-ops \
+  --confirm-mechanical \
+  --confirm-mocap \
+  --confirm-anchors
+```
+
+Expected operator output:
+
+```text
+READY_TO_RECORD: true
+POST_RUN_DATASET_READY: false
+STATE: ready_to_record
+FAILED_STAGE: none
+CAUSE: pre-run gate passed; no blocking failures or pre-run warnings
+```
+
+`POST_RUN_DATASET_READY` is expected to be `false` before recording because no
+bag exists yet. If `READY_TO_RECORD` is `false`, do not collect publishable
+data. Use the printed `FAILED_STAGE`, `CAUSE`, `EVIDENCE`, and `NEXT_ACTION` to
+decide the repair. Only then use `apply_robot_doctor_fix.sh` or perform a
+physical A/B swap.
+
+The `--expected-d455-serial` value should come from the robot inventory label.
+This makes accidental camera swaps deterministic: the gate fails under
+`1.1 Sensor device health` if the attached D455 serial does not match the robot.
+
+`robot_doctor.py` is the evidence engine underneath this wrapper. It writes the
+same `summary.json`, `summary.md`, and `decision.txt` files for auditability.
+
+## One-Time Provisioning
 
 For a freshly flashed ROS 2 robot, run the standard provisioning path first:
 
@@ -27,12 +80,10 @@ verification first, then log an explicit fallback to `trusted=yes` and still
 enforce the expected package versions. Use `REALSENSE_REPO_TRUST_MODE=signed`
 when you want the setup to fail instead of falling back.
 
-Run on the robot:
-
-```bash
-cd ~/slam_project
-bash scripts/diagnostics/robot_doctor.sh agv102 --profile preflight
-```
+For a lightweight preflight report during development, you can still run
+`robot_doctor` directly. For dataset decisions, prefer
+`scripts/diagnostics/dataset_ready_gate.sh` so report validation and the
+operator-facing decision block are always included.
 
 `robot_doctor` holds a per-robot lock while it runs. If a second diagnostic is
 started on the same robot, it fails with `3.2 diagnostic_lock` instead of

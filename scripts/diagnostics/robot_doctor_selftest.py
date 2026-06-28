@@ -444,6 +444,12 @@ class RobotDoctorParserTests(unittest.TestCase):
         text = "Device Name                   Serial Number       Firmware Version\nIntel RealSense D455          123                 5.17.0.10\n"
         self.assertEqual(Doctor.parse_realsense_firmware(text), "5.17.0.10")
 
+    def test_realsense_serial_parser(self) -> None:
+        summary = "Device Name                   Serial Number       Firmware Version\nIntel RealSense D455          333422300768        5.17.0.10\n"
+        full = "Name: Intel RealSense D455\nSerial Number: 333422300768\nFirmware: 5.17.0.10\n"
+        self.assertEqual(Doctor.parse_realsense_serial(summary), "333422300768")
+        self.assertEqual(Doctor.parse_realsense_serial(full), "333422300768")
+
     def test_realsense_ros_driver_version_parser(self) -> None:
         dpkg = "ros-humble-realsense2-camera\t4.57.7-1jammy.20260601\n"
         self.assertEqual(Doctor.parse_realsense_ros_driver_version(dpkg), "4.57.7")
@@ -831,6 +837,7 @@ class RobotDoctorConfigTests(unittest.TestCase):
                         "confirm_d455_cable_swap": True,
                         "confirm_d455_host_port_swap": True,
                         "d455_swap_notes": "/tmp/d455_swap_notes.md",
+                        "expected_d455_serial": "333422300768",
                         "expected_d455_firmware": "5.17.0.10",
                         "expected_realsense_ros_driver": "4.57.7",
                         "expected_realsense_ros_librealsense": "2.57.7",
@@ -855,6 +862,7 @@ class RobotDoctorConfigTests(unittest.TestCase):
             self.assertTrue(args.confirm_d455_cable_swap)
             self.assertTrue(args.confirm_d455_host_port_swap)
             self.assertEqual(args.d455_swap_notes, "/tmp/d455_swap_notes.md")
+            self.assertEqual(args.expected_d455_serial, "333422300768")
             self.assertEqual(args.expected_d455_firmware, "5.17.0.10")
             self.assertEqual(args.expected_realsense_ros_driver, "4.57.7")
             self.assertEqual(args.expected_realsense_ros_librealsense, "2.57.7")
