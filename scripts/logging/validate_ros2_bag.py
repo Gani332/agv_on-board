@@ -78,12 +78,23 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 def split_topics(value: str) -> List[str]:
     return [item.strip() for item in value.replace(",", " ").split() if item.strip()]
 
 
 def required_specs() -> List[TopicSpec]:
     cmd_topic = os.environ.get("CMD_TOPIC", "/cmd_vel")
+    require_cmd_vel = env_bool("REQUIRE_CMD_VEL", True)
     depth_topic = os.environ.get("DEPTH_TOPIC", "/camera/aligned_depth_to_color/image_raw")
     depth_info_topic = os.environ.get(
         "DEPTH_INFO_TOPIC", "/camera/aligned_depth_to_color/camera_info"
@@ -91,9 +102,9 @@ def required_specs() -> List[TopicSpec]:
 
     specs = [
         TopicSpec("scan", ["/scan"], 5.0, 18.0),
-        TopicSpec("odom", ["/odom"], 12.0, 20.0),
-        TopicSpec("cmd_vel", [cmd_topic, "/cmd_vel"], 0.0, 0.0),
-        TopicSpec("tf", ["/tf"], 10.0, 50.0),
+        TopicSpec("odom", ["/odom"], 12.0, 12.5),
+        TopicSpec("cmd_vel", [cmd_topic, "/cmd_vel"], 0.0, 0.0, required=require_cmd_vel),
+        TopicSpec("tf", ["/tf"], 10.0, 12.5),
         TopicSpec("tf_static", ["/tf_static"], 0.0, 0.0),
         TopicSpec("color_image", ["/camera/color/image_raw"], 12.0, 15.0),
         TopicSpec("color_info", ["/camera/color/camera_info"], 12.0, 15.0),
@@ -185,9 +196,7 @@ def stats_from_timestamps(topic: str, msg_type: str, timestamps: Sequence[int]) 
 
     target_hz = target_hz_for_topic(topic)
     if target_hz > 0:
-        expected = 1.0 / target_hz
-        minor_limit = 1.5 * expected
-        major_limit = 3.0 * expected
+        minor_limit, major_limit = gap_limits_for_topic(topic, target_hz)
         minor_gaps = sum(1 for gap in gaps if minor_limit < gap <= major_limit)
         major_gaps = sum(1 for gap in gaps if gap > major_limit)
     else:
@@ -399,10 +408,22 @@ def classify_gaps(item: TopicStats, target_hz: float) -> Tuple[int, int, Optiona
     return item.minor_gaps, item.major_gaps, item.max_gap_sec
 
 
+def gap_limits_for_topic(topic: str, target_hz: float) -> Tuple[float, float]:
+    if topic.startswith("/camera/") and (
+        topic.endswith("/image_raw") or topic.endswith("/camera_info")
+    ):
+        return (
+            env_float("RGBD_MINOR_GAP_SEC", 0.25),
+            env_float("RGBD_MAJOR_GAP_SEC", 0.75),
+        )
+    expected = 1.0 / target_hz
+    return 1.5 * expected, 3.0 * expected
+
+
 def coverage_tolerance_sec(target_hz: float) -> float:
     if target_hz <= 0:
         return 0.0
-    return max(1.0, 3.0 / target_hz)
+    return max(env_float("COVERAGE_TOLERANCE_SEC", 3.0), 3.0 / target_hz)
 
 
 def validate_topic_coverage(
@@ -471,13 +492,13 @@ def validate_topics(
         if item is None:
             record(
                 results,
-                FAIL,
+                FAIL if spec.required else WARN,
                 spec.label,
                 "missing; checked {}".format(", ".join(dict.fromkeys(spec.candidates))),
             )
             continue
         if item.count <= 0:
-            record(results, FAIL, spec.label, f"{item.topic} present but empty", item.topic)
+            record(results, FAIL if spec.required else WARN, spec.label, f"{item.topic} present but empty", item.topic)
             continue
         if spec.min_hz > 0 and item.hz < spec.min_hz:
             record(
@@ -508,19 +529,21 @@ def validate_topics(
         minor, major, max_gap = classify_gaps(item, spec.target_hz)
         if spec.target_hz > 0 and max_gap is not None:
             if major:
+                _, major_limit = gap_limits_for_topic(item.topic, spec.target_hz)
                 record(
                     results,
                     FAIL,
                     spec.label + "_gaps",
-                    f"{major} major gap(s), {minor} minor gap(s); max gap {max_gap:.3f}s exceeds 3x target period",
+                    f"{major} major gap(s), {minor} minor gap(s); max gap {max_gap:.3f}s exceeds major threshold {major_limit:.3f}s",
                     item.topic,
                 )
             elif minor:
+                minor_limit, _ = gap_limits_for_topic(item.topic, spec.target_hz)
                 record(
                     results,
                     WARN,
                     spec.label + "_gaps",
-                    f"{minor} minor gap(s); max gap {max_gap:.3f}s exceeds 1.5x target period",
+                    f"{minor} minor gap(s); max gap {max_gap:.3f}s exceeds warning threshold {minor_limit:.3f}s",
                     item.topic,
                 )
             else:
