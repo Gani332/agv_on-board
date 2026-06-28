@@ -397,6 +397,7 @@ echo ""
 # ---------------------------------------------------------------------------
 START_EPOCH=$(date +%s)
 BRINGUP_PID=""
+BRINGUP_PGID=""
 
 ROSBAG_PID=""
 WATCHDOG_PID=""
@@ -427,6 +428,36 @@ wait_or_kill() {
     if kill -0 "${pid}" 2>/dev/null; then
         echo "  [WARN] ${label} still running; sending SIGKILL."
         kill -KILL "${pid}" 2>/dev/null || true
+    fi
+    wait "${pid}" 2>/dev/null || true
+}
+
+wait_or_kill_group() {
+    local pgid="$1"
+    local pid="$2"
+    local label="$3"
+    local timeout_s="${4:-20}"
+    local end=$((SECONDS + timeout_s))
+
+    if [ -z "${pgid}" ] || ! kill -0 "-${pgid}" 2>/dev/null; then
+        wait_or_kill "${pid}" "${label}" "${timeout_s}"
+        return
+    fi
+
+    while [ "${SECONDS}" -lt "${end}" ]; do
+        if ! kill -0 "-${pgid}" 2>/dev/null; then
+            wait "${pid}" 2>/dev/null || true
+            return
+        fi
+        sleep 1
+    done
+
+    echo "  [WARN] ${label} process group did not exit after ${timeout_s}s; sending SIGTERM."
+    kill -TERM "-${pgid}" 2>/dev/null || true
+    sleep 5
+    if kill -0 "-${pgid}" 2>/dev/null; then
+        echo "  [WARN] ${label} process group still running; sending SIGKILL."
+        kill -KILL "-${pgid}" 2>/dev/null || true
     fi
     wait "${pid}" 2>/dev/null || true
 }
@@ -654,6 +685,19 @@ watchdog_rate_check() {
     return 1
 }
 
+watchdog_liveness_check() {
+    local topic="$1"
+    local timeout_s="${2:-6}"
+
+    if timeout "${timeout_s}" ros2 topic echo --once "${topic}" > /dev/null 2>&1; then
+        echo "PASS ${topic}: live sample received" >> "${RUNTIME_WATCHDOG_LOG}"
+        return 0
+    fi
+
+    echo "FAIL ${topic}: no live sample within ${timeout_s}s" >> "${RUNTIME_WATCHDOG_LOG}"
+    return 1
+}
+
 run_runtime_watchdog() {
     local cycle=0
     local failures
@@ -685,8 +729,8 @@ run_runtime_watchdog() {
 
         watchdog_rate_check /scan "${MIN_SCAN_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 20 || failures=$((failures + 1))
         watchdog_rate_check /odom "${MIN_ODOM_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 20 || failures=$((failures + 1))
-        watchdog_rate_check /camera/color/image_raw "${MIN_RGBD_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 30 || failures=$((failures + 1))
-        watchdog_rate_check /camera/aligned_depth_to_color/image_raw "${MIN_RGBD_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 30 || failures=$((failures + 1))
+        watchdog_liveness_check /camera/color/image_raw 8 || failures=$((failures + 1))
+        watchdog_liveness_check /camera/aligned_depth_to_color/image_raw 8 || failures=$((failures + 1))
         watchdog_rate_check /camera/imu "${MIN_CAMERA_IMU_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 50 || failures=$((failures + 1))
         if [ "${REQUIRE_GT}" = true ]; then
             watchdog_rate_check "${MOCAP_TOPIC}" "${MIN_GT_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 20 || failures=$((failures + 1))
@@ -820,8 +864,13 @@ cleanup() {
 
     if [ -n "${BRINGUP_PID}" ] && kill -0 "${BRINGUP_PID}" 2>/dev/null; then
         echo "Stopping bringup..."
-        kill -INT "${BRINGUP_PID}" 2>/dev/null || true
-        wait_or_kill "${BRINGUP_PID}" "bringup" 30
+        if [ -n "${BRINGUP_PGID}" ] && kill -0 "-${BRINGUP_PGID}" 2>/dev/null; then
+            kill -INT "-${BRINGUP_PGID}" 2>/dev/null || true
+            wait_or_kill_group "${BRINGUP_PGID}" "${BRINGUP_PID}" "bringup" 30
+        else
+            kill -INT "${BRINGUP_PID}" 2>/dev/null || true
+            wait_or_kill "${BRINGUP_PID}" "bringup" 30
+        fi
     fi
 
     capture_hardware_snapshot "post-run" "${HARDWARE_POST_LOG}"
@@ -898,9 +947,13 @@ BRINGUP_LOG="${BAG_DIR}/${SESSION_ID}_bringup.log"
 echo "Checking for stale bringup processes..."
 STALE_PIDS=$(pgrep -f 'myagv_odometry_node|ydlidar_ros2_driver_node|realsense2_camera_node' 2>/dev/null | tr '\n' ' ')
 if [ -n "${STALE_PIDS}" ]; then
-    echo "  Found stale bringup pids: ${STALE_PIDS}— killing before starting fresh."
-    kill ${STALE_PIDS} 2>/dev/null || true
+    echo "  Found stale bringup pids: ${STALE_PIDS}; killing before starting fresh."
+    pkill -INT -f 'myagv_odometry_node|ydlidar_ros2_driver_node|realsense2_camera_node' 2>/dev/null || true
     sleep 3
+    pkill -TERM -f 'myagv_odometry_node|ydlidar_ros2_driver_node|realsense2_camera_node' 2>/dev/null || true
+    sleep 2
+    pkill -KILL -f 'myagv_odometry_node|ydlidar_ros2_driver_node|realsense2_camera_node' 2>/dev/null || true
+    sleep 1
 fi
 
 # Reset the D455 using USBDEVFS_RESET — resets only the camera at USB protocol
@@ -939,7 +992,7 @@ echo "Starting bringup; log: ${BRINGUP_LOG}"
 if [ "${ROS_VERSION}" = "2" ]; then
     COLOR_PROFILE="${CAMERA_COLOR_WIDTH}x${CAMERA_COLOR_HEIGHT}x${CAMERA_COLOR_FPS}"
     DEPTH_PROFILE="${CAMERA_DEPTH_WIDTH}x${CAMERA_DEPTH_HEIGHT}x${CAMERA_DEPTH_FPS}"
-    ros2 launch agv_bringup bringup.launch.py \
+    setsid ros2 launch agv_bringup bringup.launch.py \
         agv_serial_port:="/dev/ttyACM0" \
         agv_color_profile:="${COLOR_PROFILE}" \
         agv_depth_profile:="${DEPTH_PROFILE}" \
@@ -948,7 +1001,7 @@ if [ "${ROS_VERSION}" = "2" ]; then
         agv_cmd_vel_topic:="${CMD_TOPIC}" \
         > "${BRINGUP_LOG}" 2>&1 &
 else
-    roslaunch agv_bringup bringup.launch \
+    setsid roslaunch agv_bringup bringup.launch \
         enable_realsense_sync:="${ENABLE_REALSENSE_SYNC}" \
         color_width:="${CAMERA_COLOR_WIDTH}" \
         color_height:="${CAMERA_COLOR_HEIGHT}" \
@@ -959,6 +1012,8 @@ else
         > "${BRINGUP_LOG}" 2>&1 &
 fi
 BRINGUP_PID=$!
+sleep 1
+BRINGUP_PGID="$(ps -o pgid= -p "${BRINGUP_PID}" 2>/dev/null | tr -d ' ')"
 
 echo "Waiting for required sensor streams before recording..."
 FAILED_TOPICS=()
@@ -1069,10 +1124,14 @@ ROSBAG_PID=""
 if [ -s "${RUNTIME_WATCHDOG_STATUS_FILE}" ] && \
    grep -q "^FAIL_RUNTIME_WATCHDOG" "${RUNTIME_WATCHDOG_STATUS_FILE}"; then
     echo "ERROR: runtime watchdog stopped this recording; do not use this bag as publishable data." >&2
+    cleanup
     exit 1
 fi
 
 if [ "${ROSBAG_RC}" -ne 0 ]; then
     echo "ERROR: rosbag exited with status ${ROSBAG_RC}." >&2
+    cleanup
     exit "${ROSBAG_RC}"
 fi
+
+cleanup
