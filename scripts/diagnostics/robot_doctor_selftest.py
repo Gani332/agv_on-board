@@ -34,6 +34,7 @@ from robot_doctor import (  # noqa: E402
     format_operator_decision,
     summarize_decision,
 )
+from classify_realsense_fault import classify as classify_realsense_fault  # noqa: E402
 from dataset_run_audit import audit_artifact_consistency, audit_manifests, audit_reports  # noqa: E402
 from fleet_doctor_summary import fleet_gate_errors, fleet_readiness_errors  # noqa: E402
 from validate_robot_doctor_report import resolve_evidence_path, validate_report  # noqa: E402
@@ -759,6 +760,36 @@ class RobotDoctorParserTests(unittest.TestCase):
             matches = [item for item in doctor.results if item.check == "d455_infra_fps_cap"]
             self.assertEqual((matches[-1].code, matches[-1].status), ("2.2", "FAIL"))
             self.assertIn("depth_module.enable_auto_exposure", matches[-1].next_action)
+
+
+class RealSenseFaultClassifierTests(unittest.TestCase):
+    def test_bounded_rgbd_gap_is_pass_with_stream_warnings(self) -> None:
+        text = """
+PASS color stream: /camera/color/image_raw 14.638 Hz
+WARN color stream max gap: 0.655s exceeds warning 0.25s but is <= hard 0.75s
+PASS aligned depth stream: /camera/aligned_depth_to_color/image_raw 14.986 Hz
+WARN aligned depth stream max gap: 0.651s exceeds warning 0.25s but is <= hard 0.75s
+PASS camera imu stream: /camera/imu 200.066 Hz
+PASS camera imu stream max gap: 0.011s <= warning 0.10s
+PASS RealSense runtime log: no UVC/control timeout text observed
+speed=5000
+"""
+        classification, evidence, limitations = classify_realsense_fault(text)
+        self.assertEqual(classification, "PASS_WITH_STREAM_WARNINGS")
+        self.assertTrue(any("bounded warning gaps" in item for item in evidence))
+        self.assertTrue(any("Final bag validation" in item for item in limitations))
+
+    def test_hard_rgbd_gap_remains_stream_gap_failure(self) -> None:
+        text = """
+PASS color stream: /camera/color/image_raw 14.638 Hz
+FAIL color stream max gap: 1.250s exceeds hard 0.75s
+PASS aligned depth stream: /camera/aligned_depth_to_color/image_raw 14.986 Hz
+PASS camera imu stream: /camera/imu 200.066 Hz
+PASS camera imu stream max gap: 0.011s <= warning 0.10s
+speed=5000
+"""
+        classification, _, _ = classify_realsense_fault(text)
+        self.assertEqual(classification, "REALSENSE_STREAM_GAP_FAILURE")
 
 
 class RobotDoctorDecisionTests(unittest.TestCase):

@@ -45,7 +45,8 @@ MIN_CAMERA_IMU_HZ="${MIN_CAMERA_IMU_HZ:-150}"
 MIN_SCAN_HZ="${MIN_SCAN_HZ:-5}"
 MIN_ODOM_HZ="${MIN_ODOM_HZ:-10}"
 MIN_GT_HZ="${MIN_GT_HZ:-5}"
-MAX_RGBD_GATE_GAP_SEC="${MAX_RGBD_GATE_GAP_SEC:-0.25}"
+RGBD_WARN_GATE_GAP_SEC="${RGBD_WARN_GATE_GAP_SEC:-0.25}"
+MAX_RGBD_GATE_GAP_SEC="${MAX_RGBD_GATE_GAP_SEC:-0.75}"
 MAX_CAMERA_IMU_GATE_GAP_SEC="${MAX_CAMERA_IMU_GATE_GAP_SEC:-0.10}"
 RGBD_STARTUP_TIMEOUT="${RGBD_STARTUP_TIMEOUT:-90}"
 IMU_STARTUP_TIMEOUT="${IMU_STARTUP_TIMEOUT:-30}"
@@ -356,6 +357,9 @@ enable_realsense_sync: ${ENABLE_REALSENSE_SYNC}
 rosbag2_max_cache_size_bytes: ${ROSBAG2_MAX_CACHE_SIZE}
 realsense_camera_gate_required: ${RUN_REALSENSE_CAMERA_GATE}
 realsense_camera_gate_seconds: ${REALSENSE_CAMERA_GATE_SECONDS}
+rgbd_warn_gate_gap_sec: ${RGBD_WARN_GATE_GAP_SEC}
+rgbd_hard_gate_gap_sec: ${MAX_RGBD_GATE_GAP_SEC}
+camera_imu_hard_gate_gap_sec: ${MAX_CAMERA_IMU_GATE_GAP_SEC}
 realsense_camera_gate_pre_log: ${SESSION_ID}_camera_gate_pre.log
 realsense_camera_gate_post_log: ${SESSION_ID}_camera_gate_post.log
 strict_realsense_uvc_log: ${STRICT_REALSENSE_UVC_LOG}
@@ -498,8 +502,9 @@ run_camera_pre_gate() {
         echo "stream_seconds: ${REALSENSE_CAMERA_GATE_SECONDS}"
         echo "min_rgbd_hz: ${MIN_RGBD_HZ}"
         echo "min_camera_imu_hz: ${MIN_CAMERA_IMU_HZ}"
-        echo "max_rgbd_gate_gap_sec: ${MAX_RGBD_GATE_GAP_SEC}"
-        echo "max_camera_imu_gate_gap_sec: ${MAX_CAMERA_IMU_GATE_GAP_SEC}"
+        echo "rgbd_warn_gate_gap_sec: ${RGBD_WARN_GATE_GAP_SEC}"
+        echo "rgbd_hard_gate_gap_sec: ${MAX_RGBD_GATE_GAP_SEC}"
+        echo "camera_imu_hard_gate_gap_sec: ${MAX_CAMERA_IMU_GATE_GAP_SEC}"
         echo "color_log: $(basename "${color_log}")"
         echo "aligned_depth_log: $(basename "${depth_log}")"
         echo "imu_log: $(basename "${imu_log}")"
@@ -543,7 +548,8 @@ run_camera_pre_gate() {
         local file="$2"
         local min_rate="$3"
         local label="$4"
-        local max_gap_limit="$5"
+        local warn_gap_limit="$5"
+        local hard_gap_limit="$6"
         local max_gap
 
         rate="$(_camera_rate_from_log "${file}")"
@@ -562,17 +568,19 @@ run_camera_pre_gate() {
         max_gap="$(_camera_max_gap_from_log "${file}")"
         if [ -z "${max_gap}" ]; then
             echo "WARN ${label}: no max-gap data found for ${topic}" | tee -a "${CAMERA_GATE_PRE_LOG}"
-        elif awk -v gap="${max_gap}" -v limit="${max_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
-            echo "PASS ${label} max gap: ${max_gap}s <= ${max_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
+        elif awk -v gap="${max_gap}" -v limit="${warn_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
+            echo "PASS ${label} max gap: ${max_gap}s <= warning ${warn_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
+        elif awk -v gap="${max_gap}" -v limit="${hard_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
+            echo "WARN ${label} max gap: ${max_gap}s exceeds warning ${warn_gap_limit}s but is <= hard ${hard_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
         else
-            echo "FAIL ${label} max gap: ${max_gap}s exceeds ${max_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
+            echo "FAIL ${label} max gap: ${max_gap}s exceeds hard ${hard_gap_limit}s" | tee -a "${CAMERA_GATE_PRE_LOG}"
             failures=$((failures + 1))
         fi
     }
 
-    _camera_check_rate_log /camera/color/image_raw "${color_log}" "${MIN_RGBD_HZ}" "color stream" "${MAX_RGBD_GATE_GAP_SEC}"
-    _camera_check_rate_log /camera/aligned_depth_to_color/image_raw "${depth_log}" "${MIN_RGBD_HZ}" "aligned depth stream" "${MAX_RGBD_GATE_GAP_SEC}"
-    _camera_check_rate_log /camera/imu "${imu_log}" "${MIN_CAMERA_IMU_HZ}" "camera imu stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}"
+    _camera_check_rate_log /camera/color/image_raw "${color_log}" "${MIN_RGBD_HZ}" "color stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}"
+    _camera_check_rate_log /camera/aligned_depth_to_color/image_raw "${depth_log}" "${MIN_RGBD_HZ}" "aligned depth stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}"
+    _camera_check_rate_log /camera/imu "${imu_log}" "${MIN_CAMERA_IMU_HZ}" "camera imu stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}"
 
     if grep -Eiq "The device has been disconnected|USB disconnect|No such device|device removed" "${gate_bringup_log}" 2>/dev/null; then
         echo "FAIL RealSense runtime log: camera disconnect/device-drop errors observed" | tee -a "${CAMERA_GATE_PRE_LOG}"

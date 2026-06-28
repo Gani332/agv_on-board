@@ -59,6 +59,27 @@ This makes accidental camera swaps deterministic: the gate fails under
 `robot_doctor.py` is the evidence engine underneath this wrapper. It writes the
 same `summary.json`, `summary.md`, and `decision.txt` files for auditability.
 
+## RGB-D Gap Policy
+
+The D455 RGB-D streams are high-bandwidth ROS image topics running on a
+non-real-time Raspberry Pi/Linux/ROS 2 stack. The pipeline therefore does not
+try to prove that image delivery has zero jitter. That is not a deterministic
+property of this hardware/software stack.
+
+Instead, the pre-run gate proves:
+
+- RGB-D average rate is high enough for collection.
+- RGB-D continuity gaps are bounded.
+- D455 IMU continuity remains strict.
+- USB link, power/throttle, and RealSense runtime logs do not show transport
+  failure.
+
+By default, RGB-D gaps above `0.25s` are warnings and RGB-D gaps above `0.75s`
+are hard failures. The D455 IMU remains a hard failure above `0.10s` because it
+is small, low-bandwidth, and should stay stable. A bounded RGB-D warning means
+the robot can start recording, but the final bag still needs the post-run bag
+validator/audit before the run is called publishable.
+
 ## One-Time Provisioning
 
 For a freshly flashed ROS 2 robot, run the standard provisioning path first:
