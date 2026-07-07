@@ -54,6 +54,7 @@ class TopicStats:
     minor_gaps: int
     major_gaps: int
     non_monotonic_count: int
+    gap_events: Sequence[Tuple[int, int, float]]
 
     @property
     def duration_sec(self) -> float:
@@ -95,9 +96,9 @@ def split_topics(value: str) -> List[str]:
 def required_specs() -> List[TopicSpec]:
     cmd_topic = os.environ.get("CMD_TOPIC", "/cmd_vel")
     require_cmd_vel = env_bool("REQUIRE_CMD_VEL", True)
-    depth_topic = os.environ.get("DEPTH_TOPIC", "/camera/aligned_depth_to_color/image_raw")
+    depth_topic = os.environ.get("DEPTH_TOPIC", "/camera/depth/image_rect_raw")
     depth_info_topic = os.environ.get(
-        "DEPTH_INFO_TOPIC", "/camera/aligned_depth_to_color/camera_info"
+        "DEPTH_INFO_TOPIC", "/camera/depth/camera_info"
     )
 
     specs = [
@@ -106,17 +107,29 @@ def required_specs() -> List[TopicSpec]:
         TopicSpec("cmd_vel", [cmd_topic, "/cmd_vel"], 0.0, 0.0, required=require_cmd_vel),
         TopicSpec("tf", ["/tf"], 10.0, 12.5),
         TopicSpec("tf_static", ["/tf_static"], 0.0, 0.0),
-        TopicSpec("color_image", ["/camera/color/image_raw"], 12.0, 15.0),
-        TopicSpec("color_info", ["/camera/color/camera_info"], 12.0, 15.0),
+        TopicSpec("color_image", ["/camera/color/image_raw", "/camera/camera/color/image_raw"], 12.0, 15.0),
+        TopicSpec("color_info", ["/camera/color/camera_info", "/camera/camera/color/camera_info"], 12.0, 15.0),
         TopicSpec(
             "depth_image",
-            [depth_topic, "/camera/aligned_depth_to_color/image_raw", "/camera/depth/image_rect_raw"],
+            [
+                depth_topic,
+                "/camera/depth/image_rect_raw",
+                "/camera/camera/depth/image_rect_raw",
+                "/camera/aligned_depth_to_color/image_raw",
+                "/camera/camera/aligned_depth_to_color/image_raw",
+            ],
             12.0,
             15.0,
         ),
         TopicSpec(
             "depth_info",
-            [depth_info_topic, "/camera/aligned_depth_to_color/camera_info", "/camera/depth/camera_info"],
+            [
+                depth_info_topic,
+                "/camera/depth/camera_info",
+                "/camera/camera/depth/camera_info",
+                "/camera/aligned_depth_to_color/camera_info",
+                "/camera/camera/aligned_depth_to_color/camera_info",
+            ],
             12.0,
             15.0,
         ),
@@ -146,7 +159,15 @@ def ground_truth_topics() -> List[str]:
 
 
 def imu_topics() -> List[str]:
-    topics = ["/imu", "/camera/imu", "/camera/accel/sample", "/camera/gyro/sample"]
+    topics = [
+        "/imu",
+        "/camera/imu",
+        "/camera/accel/sample",
+        "/camera/gyro/sample",
+        "/camera/camera/imu",
+        "/camera/camera/accel/sample",
+        "/camera/camera/gyro/sample",
+    ]
     for topic in split_topics(os.environ.get("IMU_TOPICS", "")):
         if topic not in topics:
             topics.append(topic)
@@ -187,18 +208,22 @@ def stats_from_timestamps(topic: str, msg_type: str, timestamps: Sequence[int]) 
     non_monotonic_count = sum(1 for index in range(1, len(sequence)) if sequence[index] < sequence[index - 1])
     if sequence:
         ordered = sorted(sequence)
-        gaps = [(ordered[i + 1] - ordered[i]) / 1e9 for i in range(len(ordered) - 1)]
+        gap_events = [
+            (ordered[i], ordered[i + 1], (ordered[i + 1] - ordered[i]) / 1e9)
+            for i in range(len(ordered) - 1)
+        ]
+        gaps = [item[2] for item in gap_events]
         max_gap = max(gaps) if gaps else None
     else:
         ordered = []
-        gaps = []
+        gap_events = []
         max_gap = None
 
     target_hz = target_hz_for_topic(topic)
     if target_hz > 0:
         minor_limit, major_limit = gap_limits_for_topic(topic, target_hz)
-        minor_gaps = sum(1 for gap in gaps if minor_limit < gap <= major_limit)
-        major_gaps = sum(1 for gap in gaps if gap > major_limit)
+        minor_gaps = sum(1 for _, _, gap in gap_events if minor_limit < gap <= major_limit)
+        major_gaps = sum(1 for _, _, gap in gap_events if gap > major_limit)
     else:
         minor_gaps = 0
         major_gaps = 0
@@ -213,6 +238,7 @@ def stats_from_timestamps(topic: str, msg_type: str, timestamps: Sequence[int]) 
         minor_gaps=minor_gaps,
         major_gaps=major_gaps,
         non_monotonic_count=non_monotonic_count,
+        gap_events=gap_events,
     )
 
 
@@ -402,10 +428,44 @@ def record(results: List[Result], level: str, check: str, message: str, topic: s
     print(f"  [{symbol}] {check}: {message}")
 
 
-def classify_gaps(item: TopicStats, target_hz: float) -> Tuple[int, int, Optional[float]]:
+def classify_gaps(
+    item: TopicStats,
+    target_hz: float,
+    bag_start_ns: Optional[int],
+    bag_end_ns: Optional[int],
+) -> Tuple[int, int, Optional[float], int]:
     if target_hz <= 0 or item.count <= 2 or item.first_ns is None:
-        return 0, 0, item.max_gap_sec
-    return item.minor_gaps, item.major_gaps, item.max_gap_sec
+        return 0, 0, item.max_gap_sec, 0
+
+    minor_limit, major_limit = gap_limits_for_topic(item.topic, target_hz)
+    edge_ignore_sec = env_float("EDGE_GAP_IGNORE_SEC", 3.0)
+    edge_ignore_ns = int(max(0.0, edge_ignore_sec) * 1e9)
+    edge_start_ns = (bag_start_ns + edge_ignore_ns) if bag_start_ns is not None else None
+    edge_end_ns = (bag_end_ns - edge_ignore_ns) if bag_end_ns is not None else None
+
+    minor = 0
+    major = 0
+    ignored_edge = 0
+    internal_gaps: List[float] = []
+    for prev_ns, next_ns, gap in item.gap_events:
+        if gap <= minor_limit:
+            internal_gaps.append(gap)
+            continue
+        is_edge_gap = False
+        if edge_start_ns is not None and next_ns <= edge_start_ns:
+            is_edge_gap = True
+        if edge_end_ns is not None and prev_ns >= edge_end_ns:
+            is_edge_gap = True
+        if is_edge_gap:
+            ignored_edge += 1
+            continue
+        internal_gaps.append(gap)
+        if gap > major_limit:
+            major += 1
+        else:
+            minor += 1
+    max_gap = max(internal_gaps) if internal_gaps else None
+    return minor, major, max_gap, ignored_edge
 
 
 def gap_limits_for_topic(topic: str, target_hz: float) -> Tuple[float, float]:
@@ -529,15 +589,21 @@ def validate_topics(
             spec.label + "_coverage",
         )
 
-        minor, major, max_gap = classify_gaps(item, spec.target_hz)
+        minor, major, max_gap, ignored_edge = classify_gaps(
+            item,
+            spec.target_hz,
+            bag_start_ns,
+            bag_end_ns,
+        )
         if spec.target_hz > 0 and max_gap is not None:
+            edge_note = f"; ignored {ignored_edge} start/stop edge gap(s)" if ignored_edge else ""
             if major:
                 _, major_limit = gap_limits_for_topic(item.topic, spec.target_hz)
                 record(
                     results,
                     FAIL,
                     spec.label + "_gaps",
-                    f"{major} major gap(s), {minor} minor gap(s); max gap {max_gap:.3f}s exceeds major threshold {major_limit:.3f}s",
+                    f"{major} major gap(s), {minor} minor gap(s); max internal gap {max_gap:.3f}s exceeds major threshold {major_limit:.3f}s{edge_note}",
                     item.topic,
                 )
             elif minor:
@@ -546,7 +612,7 @@ def validate_topics(
                     results,
                     WARN,
                     spec.label + "_gaps",
-                    f"{minor} minor gap(s); max gap {max_gap:.3f}s exceeds warning threshold {minor_limit:.3f}s",
+                    f"{minor} minor gap(s); max internal gap {max_gap:.3f}s exceeds warning threshold {minor_limit:.3f}s{edge_note}",
                     item.topic,
                 )
             else:
@@ -554,7 +620,7 @@ def validate_topics(
                     results,
                     PASS,
                     spec.label + "_gaps",
-                    f"max gap {max_gap:.3f}s",
+                    f"max internal gap {max_gap:.3f}s{edge_note}",
                     item.topic,
                 )
 
@@ -615,9 +681,10 @@ def validate_imu(
             "missing; checked {}".format(", ".join(imu_topics())),
         )
         return
+    live = [item for item in present if item.count > 0]
     for item in present:
         if item.count <= 0:
-            record(results, FAIL if require_imu else WARN, item.topic, "present but empty", item.topic)
+            record(results, WARN, item.topic, "present but empty", item.topic)
             continue
         min_hz = 150.0 if "gyro" in item.topic or item.topic == "/camera/imu" else 60.0
         level = PASS if item.hz >= min_hz else WARN
@@ -633,6 +700,8 @@ def validate_imu(
                 bag_end_ns,
                 item.topic.strip("/").replace("/", "_") + "_coverage",
             )
+    if require_imu and not live:
+        record(results, FAIL, "imu", "IMU required but all IMU topics are empty")
 
 
 def bag_bounds(stats: Dict[str, TopicStats]) -> Tuple[Optional[int], Optional[int], float]:

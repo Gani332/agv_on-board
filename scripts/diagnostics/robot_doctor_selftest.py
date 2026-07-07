@@ -48,9 +48,11 @@ TOPICS = [
     ("/tf_static", "tf2_msgs/msg/TFMessage", 1),
     ("/camera/color/image_raw", "sensor_msgs/msg/Image", 15),
     ("/camera/color/camera_info", "sensor_msgs/msg/CameraInfo", 15),
-    ("/camera/aligned_depth_to_color/image_raw", "sensor_msgs/msg/Image", 15),
-    ("/camera/aligned_depth_to_color/camera_info", "sensor_msgs/msg/CameraInfo", 15),
+    ("/camera/depth/image_rect_raw", "sensor_msgs/msg/Image", 15),
+    ("/camera/depth/camera_info", "sensor_msgs/msg/CameraInfo", 15),
     ("/imu", "sensor_msgs/msg/Imu", 100),
+    ("/camera/gyro/sample", "sensor_msgs/msg/Imu", 200),
+    ("/camera/accel/sample", "sensor_msgs/msg/Imu", 100),
     ("/optitrack/rigid_bodies/agv", "geometry_msgs/msg/PoseStamped", 50),
 ]
 
@@ -100,7 +102,10 @@ def write_ros2_bag(
     *,
     duration_sec: float = 10.0,
     missing_topic: str = "",
+    missing_topics: Optional[set[str]] = None,
+    empty_topic: str = "",
     scan_major_gap: bool = False,
+    scan_shutdown_gap: bool = False,
     truncated_topic: str = "",
     non_monotonic_topic: str = "",
 ) -> None:
@@ -119,10 +124,16 @@ def write_ros2_bag(
     start_ns = 1_000_000_000
     msg_id = 1
     topic_id = 1
+    missing = set(missing_topics or set())
+    if missing_topic:
+        missing.add(missing_topic)
     for name, msg_type, hz in TOPICS:
-        if name == missing_topic:
+        if name in missing:
             continue
         cur.execute("INSERT INTO topics VALUES (?,?,?,?,?)", (topic_id, name, msg_type, "cdr", ""))
+        if name == empty_topic:
+            topic_id += 1
+            continue
         topic_duration = duration_sec * 0.5 if name == truncated_topic else duration_sec
         n_msgs = max(1, int(topic_duration * hz))
         for i in range(n_msgs):
@@ -131,6 +142,8 @@ def write_ros2_bag(
             else:
                 offset_ns = int(i * (topic_duration * 1e9 / (n_msgs - 1)))
             if scan_major_gap and name == "/scan" and i > n_msgs // 2:
+                offset_ns += 350_000_000
+            if scan_shutdown_gap and name == "/scan" and i > n_msgs - max(3, int(hz)):
                 offset_ns += 350_000_000
             if non_monotonic_topic == name and i == n_msgs // 2:
                 offset_ns = 0
@@ -189,6 +202,17 @@ class ValidateRos2BagTests(unittest.TestCase):
             failures = [item["check"] for item in report["results"] if item["level"] == "FAIL"]
             self.assertIn("scan", failures)
 
+    def test_ros2_validator_accepts_raw_imu_when_fused_imu_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bag = Path(tmp) / "raw_imu_only"
+            write_ros2_bag(bag, missing_topics={"/imu"})
+            rc, report = run_validator(bag)
+            self.assertEqual(rc, 0)
+            failures = [item for item in report["results"] if item["level"] == "FAIL"]
+            self.assertFalse(failures)
+            self.assertTrue(any(item["check"] == "/camera/gyro/sample" and item["level"] == "PASS" for item in report["results"]))
+            self.assertTrue(any(item["check"] == "/camera/accel/sample" and item["level"] == "PASS" for item in report["results"]))
+
     def test_major_gap_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bag = Path(tmp) / "scan_gap"
@@ -197,6 +221,17 @@ class ValidateRos2BagTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             failures = [item for item in report["results"] if item["level"] == "FAIL"]
             self.assertTrue(any(item["check"] == "scan_gaps" for item in failures))
+
+    def test_shutdown_edge_gap_does_not_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bag = Path(tmp) / "scan_shutdown_gap"
+            write_ros2_bag(bag, scan_shutdown_gap=True)
+            rc, report = run_validator(bag)
+            self.assertEqual(rc, 0)
+            failures = [item for item in report["results"] if item["level"] == "FAIL"]
+            self.assertFalse(any(item["check"] == "scan_gaps" for item in failures))
+            passes = [item for item in report["results"] if item["level"] == "PASS"]
+            self.assertTrue(any(item["check"] == "scan_gaps" and "edge gap" in item["message"] for item in passes))
 
     def test_truncated_required_stream_fails_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -298,7 +333,12 @@ class RobotDoctorParserTests(unittest.TestCase):
         self.assertEqual(status, "PASS")
         self.assertIn("<= 1.000 ms", summary)
 
-        bad_text = ok_text.replace("0.000345678", "0.002000000")
+        stepped_text = ok_text.replace("0.000234567", "1975798.750000000").replace("0.000345678", "1975798.750000000")
+        status, summary, _ = Doctor.classify_chrony_tracking(stepped_text, 1.0, "dataset")
+        self.assertEqual(status, "PASS")
+        self.assertIn("historical", summary)
+
+        bad_text = ok_text.replace("0.000123456", "0.002000000")
         status, summary, next_action = Doctor.classify_chrony_tracking(bad_text, 1.0, "dataset")
         self.assertEqual(status, "FAIL")
         self.assertIn("exceeds", summary)
@@ -767,10 +807,12 @@ class RealSenseFaultClassifierTests(unittest.TestCase):
         text = """
 PASS color stream: /camera/color/image_raw 14.638 Hz
 WARN color stream steady max gap: 0.655s exceeds warning 0.25s but is <= hard 0.75s after window 40
-PASS aligned depth stream: /camera/aligned_depth_to_color/image_raw 14.986 Hz
-WARN aligned depth stream steady max gap: 0.651s exceeds warning 0.25s but is <= hard 0.75s after window 40
-PASS camera imu stream: /camera/imu 200.066 Hz
-PASS camera imu stream steady max gap: 0.011s <= warning 0.10s after window 80
+PASS depth stream: /camera/depth/image_rect_raw 14.986 Hz
+WARN depth stream steady max gap: 0.651s exceeds warning 0.25s but is <= hard 0.75s after window 40
+PASS camera gyro stream: /camera/gyro/sample 200.066 Hz
+PASS camera gyro stream steady max gap: 0.011s <= warning 0.10s after window 80
+PASS camera accel stream: /camera/accel/sample 100.066 Hz
+PASS camera accel stream steady max gap: 0.020s <= warning 0.10s after window 40
 PASS RealSense runtime log: no UVC/control timeout text observed
 speed=5000
 """
@@ -783,13 +825,29 @@ speed=5000
         text = """
 PASS color stream: /camera/color/image_raw 14.638 Hz
 FAIL color stream steady max gap: 1.250s exceeds hard 0.75s after window 40
-PASS aligned depth stream: /camera/aligned_depth_to_color/image_raw 14.986 Hz
-PASS camera imu stream: /camera/imu 200.066 Hz
-PASS camera imu stream steady max gap: 0.011s <= warning 0.10s after window 80
+PASS depth stream: /camera/depth/image_rect_raw 14.986 Hz
+PASS camera gyro stream: /camera/gyro/sample 200.066 Hz
+PASS camera gyro stream steady max gap: 0.011s <= warning 0.10s after window 80
+PASS camera accel stream: /camera/accel/sample 100.066 Hz
+PASS camera accel stream steady max gap: 0.020s <= warning 0.10s after window 40
 speed=5000
 """
         classification, _, _ = classify_realsense_fault(text)
         self.assertEqual(classification, "REALSENSE_STREAM_GAP_FAILURE")
+
+    def test_raw_imu_gate_passes_without_fused_imu(self) -> None:
+        text = """
+PASS color stream: /camera/color/image_raw 14.638 Hz
+PASS depth stream: /camera/depth/image_rect_raw 14.986 Hz
+PASS camera gyro stream: /camera/gyro/sample 199.900 Hz
+PASS camera gyro stream steady max gap: 0.010s <= warning 0.10s after window 80
+PASS camera accel stream: /camera/accel/sample 99.900 Hz
+PASS camera accel stream steady max gap: 0.020s <= warning 0.10s after window 40
+speed=5000
+"""
+        classification, evidence, _ = classify_realsense_fault(text)
+        self.assertEqual(classification, "PASS")
+        self.assertTrue(any("IMU/HID topics produced rate data" in item for item in evidence))
 
 
 class RobotDoctorDecisionTests(unittest.TestCase):
@@ -870,8 +928,8 @@ class RobotDoctorConfigTests(unittest.TestCase):
                         "d455_swap_notes": "/tmp/d455_swap_notes.md",
                         "expected_d455_serial": "333422300768",
                         "expected_d455_firmware": "5.17.0.10",
-                        "expected_realsense_ros_driver": "4.57.7",
-                        "expected_realsense_ros_librealsense": "2.57.7",
+                        "expected_realsense_ros_driver": "4.58.2",
+                        "expected_realsense_ros_librealsense": "2.58.2",
                         "expect_native_ros2": True,
                         "expected_robot_namespace": ["/agv100", "/agv101"],
                         "require_odom_mocap_sanity": True,
@@ -895,8 +953,8 @@ class RobotDoctorConfigTests(unittest.TestCase):
             self.assertEqual(args.d455_swap_notes, "/tmp/d455_swap_notes.md")
             self.assertEqual(args.expected_d455_serial, "333422300768")
             self.assertEqual(args.expected_d455_firmware, "5.17.0.10")
-            self.assertEqual(args.expected_realsense_ros_driver, "4.57.7")
-            self.assertEqual(args.expected_realsense_ros_librealsense, "2.57.7")
+            self.assertEqual(args.expected_realsense_ros_driver, "4.58.2")
+            self.assertEqual(args.expected_realsense_ros_librealsense, "2.58.2")
             self.assertTrue(args.expect_native_ros2)
             self.assertEqual(args.expected_robot_namespace, ["/agv100", "/agv101"])
             self.assertTrue(args.require_odom_mocap_sanity)
@@ -983,14 +1041,38 @@ class RobotDoctorConfigTests(unittest.TestCase):
                 "/tf": "tf2_msgs/msg/TFMessage",
                 "/camera/color/image_raw": "sensor_msgs/msg/Image",
                 "/camera/color/camera_info": "sensor_msgs/msg/CameraInfo",
-                "/camera/aligned_depth_to_color/image_raw": "sensor_msgs/msg/Image",
-                "/camera/aligned_depth_to_color/camera_info": "sensor_msgs/msg/CameraInfo",
+                "/camera/depth/image_rect_raw": "sensor_msgs/msg/Image",
+                "/camera/depth/camera_info": "sensor_msgs/msg/CameraInfo",
+                "/camera/gyro/sample": "sensor_msgs/msg/Imu",
+                "/camera/accel/sample": "sensor_msgs/msg/Imu",
             }
             doctor.check_dataset_bringup_context()
             self.assertEqual(len(doctor.results), 1)
             self.assertEqual(
                 (doctor.results[0].code, doctor.results[0].status, doctor.results[0].check),
                 ("2.2", "PASS", "dataset_bringup_context"),
+            )
+
+    def test_ydlidar_scan_frame_timeout_is_classified_from_bringup_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = build_parser().parse_args(["agvtest", "--profile", "dataset", "--output-root", tmp])
+            doctor = Doctor(args)
+            doctor.bringup_log = doctor.log_dir / "bringup_command.log"
+            doctor.bringup_log.write_text(
+                "YDLidar SDK initializing\n"
+                "LiDAR successfully connected\n"
+                "[YDLIDAR]:Lidar running correctly ! The health status: good\n"
+                "[CYdLidar] Successed to start scan mode, Elapsed time 1061 ms\n"
+                "timout count: 1\n"
+                "timout count: 2\n"
+                "[CYdLidar] Failed to turn on the Lidar, because the lidar is [Operation timed out].\n"
+            )
+            doctor.topic_types = {"/odom": "nav_msgs/msg/Odometry"}
+            doctor.check_ydlidar_bringup_classification()
+            self.assertEqual(len(doctor.results), 1)
+            self.assertEqual(
+                (doctor.results[0].code, doctor.results[0].status, doctor.results[0].check),
+                ("1.2", "FAIL", "ydlidar_scan_frame_timeout"),
             )
 
 

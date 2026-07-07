@@ -27,8 +27,8 @@ APPLY_LOW_RISK_FIXES=true
 
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 EXPECTED_LIBREALSENSE="${EXPECTED_LIBREALSENSE:-2.58.1}"
-EXPECTED_REALSENSE_ROS_DRIVER="${EXPECTED_REALSENSE_ROS_DRIVER:-4.57.7}"
-EXPECTED_REALSENSE_ROS_LIBREALSENSE="${EXPECTED_REALSENSE_ROS_LIBREALSENSE:-2.57.7}"
+EXPECTED_REALSENSE_ROS_DRIVER="${EXPECTED_REALSENSE_ROS_DRIVER:-4.58.2}"
+EXPECTED_REALSENSE_ROS_LIBREALSENSE="${EXPECTED_REALSENSE_ROS_LIBREALSENSE:-2.58.2}"
 EXPECTED_D455_FIRMWARE="${EXPECTED_D455_FIRMWARE:-5.17.0.10}"
 PYREALSENSE2_PIP_VERSION="${PYREALSENSE2_PIP_VERSION:-2.58.1.10581}"
 ALLOW_REALSENSE_VERSION_DRIFT="${ALLOW_REALSENSE_VERSION_DRIFT:-false}"
@@ -131,7 +131,7 @@ source_ros() {
 }
 
 apt_install() {
-    sudo_run apt-get install -y "$@"
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades "$@"
 }
 
 disable_legacy_realsense_sources() {
@@ -253,10 +253,32 @@ ensure_realsense_repo() {
 
 install_realsense_stack() {
     section "realsense packages"
-    install_expected_version_package librealsense2 "${EXPECTED_LIBREALSENSE}"
-    install_expected_version_package librealsense2-dev "${EXPECTED_LIBREALSENSE}"
-    install_expected_version_package librealsense2-utils "${EXPECTED_LIBREALSENSE}"
-    install_expected_version_package librealsense2-udev-rules "${EXPECTED_LIBREALSENSE}"
+    local pkg
+    local version
+    local realsense_packages=(
+        librealsense2
+        librealsense2-gl
+        librealsense2-dev
+        librealsense2-utils
+        librealsense2-udev-rules
+    )
+    local install_args=()
+    for pkg in "${realsense_packages[@]}"; do
+        version="$(apt_candidate_with_prefix "${pkg}" "${EXPECTED_LIBREALSENSE}")"
+        if [ -n "${version}" ]; then
+            install_args+=("${pkg}=${version}")
+            continue
+        fi
+        if [ "${ALLOW_REALSENSE_VERSION_DRIFT}" = "true" ]; then
+            echo "WARN: no ${pkg} candidate starts with ${EXPECTED_LIBREALSENSE}; installing available candidate."
+            install_args+=("${pkg}")
+            continue
+        fi
+        echo "ERROR: no ${pkg} candidate starts with ${EXPECTED_LIBREALSENSE}." >&2
+        echo "       Set ALLOW_REALSENSE_VERSION_DRIFT=true only for debugging, not dataset standardization." >&2
+        exit 1
+    done
+    apt_install "${install_args[@]}"
     if apt-cache show python3-pyrealsense2 >/dev/null 2>&1; then
         install_expected_version_package python3-pyrealsense2 "${EXPECTED_LIBREALSENSE}"
     else
@@ -265,11 +287,48 @@ install_realsense_stack() {
         python3 -m pip install --user "pyrealsense2==${PYREALSENSE2_PIP_VERSION}"
     fi
 
-    for pkg in librealsense2 librealsense2-dev librealsense2-utils librealsense2-udev-rules python3-pyrealsense2; do
+    for pkg in "${realsense_packages[@]}" python3-pyrealsense2; do
         if dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "ok installed"; then
             sudo_run apt-mark hold "${pkg}" >/dev/null || true
         fi
     done
+}
+
+install_realsense_ros_stack() {
+    section "realsense ros packages"
+    install_expected_version_package "ros-${ROS_DISTRO}-librealsense2" "${EXPECTED_REALSENSE_ROS_LIBREALSENSE}"
+    install_expected_version_package "ros-${ROS_DISTRO}-realsense2-camera-msgs" "${EXPECTED_REALSENSE_ROS_DRIVER}"
+    install_expected_version_package "ros-${ROS_DISTRO}-realsense2-camera" "${EXPECTED_REALSENSE_ROS_DRIVER}"
+    apt_install \
+        "ros-${ROS_DISTRO}-diagnostic-updater" \
+        "ros-${ROS_DISTRO}-realsense2-description"
+}
+
+patch_agv2_realsense_launch_standard() {
+    section "agv2 realsense launch standard"
+    local launch_file="${ROOT}/agv2_ws/src/agv_bringup/launch/bringup.launch.py"
+    if [ ! -f "${launch_file}" ]; then
+        echo "WARN: ${launch_file} not found; skipping launch patch."
+        return
+    fi
+    python3 - "${launch_file}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+replacements = {
+    "'align_depth.enable':               'true'": "'align_depth.enable':               'false'",
+    "'unite_imu_method':                 '2'": "'unite_imu_method':                 '0'",
+}
+missing = [old for old in replacements if old not in text and replacements[old] not in text]
+for old, new in replacements.items():
+    text = text.replace(old, new)
+path.write_text(text)
+if missing:
+    print("WARN: expected launch token(s) not found: " + ", ".join(missing))
+print("standardized RealSense launch: raw depth, raw gyro/accel, no on-robot depth alignment")
+PY
 }
 
 install_d455_boot_quirk() {
@@ -293,7 +352,7 @@ path = Path(sys.argv[1])
 parts = [item for item in path.read_text().strip().split() if not item.startswith("usbcore.quirks=")]
 parts.append("usbcore.quirks=8086:0b5c:kn")
 path.write_text(" ".join(parts) + "\n")'
-    printf '%s\n' "${python_script}" | sudo_run python3 - "${cmdline_file}"
+    sudo_run python3 -c "${python_script}" "${cmdline_file}"
     echo "installed usbcore.quirks=8086:0b5c:kn in ${cmdline_file}; reboot required"
 }
 
@@ -398,6 +457,7 @@ if [ "${INSTALL_SYSTEM}" = "true" ]; then
         cmake \
         git \
         i2c-tools \
+        libboost-dev \
         network-manager \
         pkg-config \
         python3-colcon-common-extensions \
@@ -410,21 +470,25 @@ if [ "${INSTALL_SYSTEM}" = "true" ]; then
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-diagnostic-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-geometry-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-image-transport}" \
+        "${ROS_DISTRO:+ros-${ROS_DISTRO}-launch-ros}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-nav-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-robot-state-publisher}" \
+        "${ROS_DISTRO:+ros-${ROS_DISTRO}-rosbag2-storage-mcap}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-sensor-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-std-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-std-srvs}" \
+        "${ROS_DISTRO:+ros-${ROS_DISTRO}-tf2-geometry-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-tf2-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-tf2-ros}" \
+        "${ROS_DISTRO:+ros-${ROS_DISTRO}-visualization-msgs}" \
         "${ROS_DISTRO:+ros-${ROS_DISTRO}-xacro}"
+
+    python3 -m pip install --user "mcap>=1.2,<2"
 
     if [ "${INSTALL_REALSENSE}" = "true" ]; then
         ensure_realsense_repo
         install_realsense_stack
-        apt_install \
-            "ros-${ROS_DISTRO}-realsense2-camera" \
-            "ros-${ROS_DISTRO}-realsense2-description"
+        install_realsense_ros_stack
         check_python_binding
     fi
     sudo_run systemctl enable --now chrony >/dev/null 2>&1 || true
@@ -443,6 +507,7 @@ if [ "${BUILD_WS}" = "true" ]; then
         echo "ERROR: missing ROS 2 workspace: ${ROOT}/agv2_ws/src" >&2
         exit 1
     fi
+    patch_agv2_realsense_launch_standard
     source_ros
     cd "${ROOT}/agv2_ws"
     colcon build --symlink-install
@@ -475,5 +540,5 @@ bash scripts/diagnostics/robot_doctor.sh ${ROBOT_ID} \\
   --config configs/robot_doctor_dataset_gate.json \\
   --profile dataset \\
   --bringup-cmd "ros2 launch agv_bringup bringup.launch.py" \\
-  --bringup-wait 45
+  --bringup-wait 90
 EOF

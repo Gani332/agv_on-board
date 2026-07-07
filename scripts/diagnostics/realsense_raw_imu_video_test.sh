@@ -35,7 +35,7 @@ rate() {
 stop_rs
 LOG=/tmp/rs_raw_imu_video_test.log
 roslaunch realsense2_camera rs_camera.launch \
-    align_depth:=true \
+    align_depth:=false \
     enable_pointcloud:=false \
     enable_sync:=false \
     color_width:=640 \
@@ -54,14 +54,14 @@ echo "pid=${PID} log=${LOG}"
 sleep 35
 
 echo "== topics =="
-rostopic list 2>/dev/null | grep -E '^/camera/(imu|accel|gyro|color/image_raw|aligned_depth_to_color/image_raw)' | sort || true
+rostopic list 2>/dev/null | grep -E '^/camera/(imu|accel|gyro|color/image_raw|depth/image_rect_raw)' | sort || true
 
 echo "== rates =="
 rate /camera/imu
 rate /camera/accel/sample
 rate /camera/gyro/sample
 rate /camera/color/image_raw
-rate /camera/aligned_depth_to_color/image_raw
+rate /camera/depth/image_rect_raw
 
 echo "== logtail =="
 grep -Ei "gyro stream|accel stream|Start publisher IMU|Device USB|Sync Mode|control_transfer|warn|error" "${LOG}" | tail -80 || true

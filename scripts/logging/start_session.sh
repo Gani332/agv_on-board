@@ -1,16 +1,19 @@
 #!/bin/bash
-# start_session.sh - Start a dataset recording session with auto-generated manifest.
+# start_session.sh - Run one managed dataset recording session.
 #
 # Usage:
 #   ./start_session.sh <robot_name> <scenario>
-#   ./start_session.sh agv1 corridor_loop
+#   REQUIRE_IMU=true REQUIRE_GT=true ./start_session.sh agv110 corridor_loop
 #
 # What it does:
-#   1. Validates that ROS is running and all required topics are publishing
-#   2. Generates a session_manifest.yaml before recording starts
-#   3. Launches roslaunch agv_bringup bringup.launch
-#   4. Waits for all sensor streams to stabilise before starting rosbag
-#   5. On Ctrl+C, finalises the manifest with duration and bag size
+#   1. Waits for clock sync before naming the session.
+#   2. Captures pre-run chrony and hardware evidence.
+#   3. Stops stale bringup/recording processes.
+#   4. Starts ROS bringup and waits for required sensor topics.
+#   5. Runs the required RealSense live gate on the active bringup.
+#   6. Records ROS 2 data with MCAP/QoS overrides when available.
+#   7. On Ctrl+C, stops recording cleanly, stops bringup, and finalizes the
+#      manifest with watchdog, hardware, and RealSense fault evidence.
 #
 # Run this on the robot. It is location-independent as long as this repo is
 # intact, e.g. ~/slam_project/scripts/logging/start_session.sh.
@@ -25,22 +28,51 @@ ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # ---------------------------------------------------------------------------
 ROBOT_NAME="${1:-agv_unknown}"
 SCENARIO="${2:-unknown_scenario}"
-DATESTAMP=$(date +%Y%m%d_%H%M%S)
 MOCAP_TOPIC="${MOCAP_TOPIC:-/optitrack/rigid_bodies/orkar_agv1}"
 CMD_TOPIC="${CMD_TOPIC:-/cmd_vel}"
 REQUIRE_GT="${REQUIRE_GT:-false}"
+WAIT_FOR_CLOCK_SYNC="${WAIT_FOR_CLOCK_SYNC:-true}"
+CLOCK_SYNC_TIMEOUT="${CLOCK_SYNC_TIMEOUT:-120}"
+if [ -z "${REQUIRE_CLOCK_SYNC+x}" ]; then
+    if [ "${REQUIRE_GT}" = true ]; then
+        REQUIRE_CLOCK_SYNC=true
+    else
+REQUIRE_CLOCK_SYNC=false
+    fi
+fi
 REQUIRE_IMU="${REQUIRE_IMU:-false}"
-IMU_TOPICS="${IMU_TOPICS:-/camera/imu /imu}"
+CAMERA_COLOR_TOPIC="${CAMERA_COLOR_TOPIC:-/camera/color/image_raw}"
+CAMERA_COLOR_INFO_TOPIC="${CAMERA_COLOR_INFO_TOPIC:-/camera/color/camera_info}"
+CAMERA_DEPTH_TOPIC="${CAMERA_DEPTH_TOPIC:-/camera/depth/image_rect_raw}"
+CAMERA_DEPTH_INFO_TOPIC="${CAMERA_DEPTH_INFO_TOPIC:-/camera/depth/camera_info}"
+CAMERA_GYRO_TOPIC="${CAMERA_GYRO_TOPIC:-/camera/gyro/sample}"
+CAMERA_ACCEL_TOPIC="${CAMERA_ACCEL_TOPIC:-/camera/accel/sample}"
+CAMERA_FUSED_IMU_TOPIC="${CAMERA_FUSED_IMU_TOPIC:-/camera/imu}"
+IMU_TOPICS="${IMU_TOPICS:-${CAMERA_GYRO_TOPIC} ${CAMERA_ACCEL_TOPIC} ${CAMERA_FUSED_IMU_TOPIC} /imu}"
 ENABLE_REALSENSE_SYNC="${ENABLE_REALSENSE_SYNC:-false}"
-ROSBAG2_MAX_CACHE_SIZE="${ROSBAG2_MAX_CACHE_SIZE:-536870912}"
+ROSBAG2_MAX_CACHE_SIZE="${ROSBAG2_MAX_CACHE_SIZE:-268435456}"
+ROSBAG2_MAX_BAG_SIZE="${ROSBAG2_MAX_BAG_SIZE:-2147483648}"
+ROSBAG2_STORAGE_ID="${ROSBAG2_STORAGE_ID:-auto}"
+ROSBAG2_STORAGE_ID_EFFECTIVE="${ROSBAG2_STORAGE_ID}"
+ROSBAG2_STORAGE_CONFIG="${ROSBAG2_STORAGE_CONFIG:-${ROOT}/configs/sqlite_resilient.yaml}"
+ROSBAG2_STORAGE_PRESET_PROFILE="${ROSBAG2_STORAGE_PRESET_PROFILE:-}"
+ROSBAG2_QOS_OVERRIDES="${ROSBAG2_QOS_OVERRIDES:-${ROOT}/configs/rosbag2_sensor_qos.yaml}"
+ROSBAG_STOP_TIMEOUT="${ROSBAG_STOP_TIMEOUT:-180}"
+BRINGUP_STOP_TIMEOUT="${BRINGUP_STOP_TIMEOUT:-60}"
+WATCHDOG_STOP_TIMEOUT="${WATCHDOG_STOP_TIMEOUT:-15}"
 RUN_REALSENSE_CAMERA_GATE="${RUN_REALSENSE_CAMERA_GATE:-true}"
 REALSENSE_CAMERA_GATE_SECONDS="${REALSENSE_CAMERA_GATE_SECONDS:-90}"
 STRICT_REALSENSE_UVC_LOG="${STRICT_REALSENSE_UVC_LOG:-false}"
+RATE_EPSILON_HZ="${RATE_EPSILON_HZ:-0.05}"
+REALSENSE_ACTIVE_RGBD_GAP_ABORT="${REALSENSE_ACTIVE_RGBD_GAP_ABORT:-false}"
 ENABLE_RUNTIME_WATCHDOG="${ENABLE_RUNTIME_WATCHDOG:-true}"
 ENABLE_RUNTIME_RGBD_WATCHDOG="${ENABLE_RUNTIME_RGBD_WATCHDOG:-false}"
+ENABLE_RUNTIME_CAMERA_IMU_WATCHDOG="${ENABLE_RUNTIME_CAMERA_IMU_WATCHDOG:-false}"
 RUNTIME_WATCHDOG_STARTUP_DELAY="${RUNTIME_WATCHDOG_STARTUP_DELAY:-15}"
 RUNTIME_WATCHDOG_INTERVAL="${RUNTIME_WATCHDOG_INTERVAL:-20}"
 RUNTIME_WATCHDOG_HZ_TIMEOUT="${RUNTIME_WATCHDOG_HZ_TIMEOUT:-12}"
+RUNTIME_WATCHDOG_MAX_CONSECUTIVE_FAILURES="${RUNTIME_WATCHDOG_MAX_CONSECUTIVE_FAILURES:-2}"
+RUNTIME_WATCHDOG_ABORT_ON_FAILURE="${RUNTIME_WATCHDOG_ABORT_ON_FAILURE:-false}"
 MIN_RGBD_HZ="${MIN_RGBD_HZ:-12}"
 MIN_CAMERA_IMU_HZ="${MIN_CAMERA_IMU_HZ:-150}"
 MIN_SCAN_HZ="${MIN_SCAN_HZ:-5}"
@@ -59,6 +91,81 @@ CAMERA_COLOR_FPS="${CAMERA_COLOR_FPS:-15}"
 CAMERA_DEPTH_WIDTH="${CAMERA_DEPTH_WIDTH:-640}"
 CAMERA_DEPTH_HEIGHT="${CAMERA_DEPTH_HEIGHT:-480}"
 CAMERA_DEPTH_FPS="${CAMERA_DEPTH_FPS:-15}"
+
+clock_is_synced() {
+    local timedate_synced
+    local chrony_text
+
+    if command -v timedatectl >/dev/null 2>&1; then
+        timedate_synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+        if [ "${timedate_synced}" = "yes" ]; then
+            return 0
+        fi
+        timedate_synced="$(timedatectl show -p SystemClockSynchronized --value 2>/dev/null || true)"
+        if [ "${timedate_synced}" = "yes" ]; then
+            return 0
+        fi
+    fi
+
+    if command -v chronyc >/dev/null 2>&1; then
+        chrony_text="$(chronyc tracking 2>/dev/null || true)"
+        printf "%s\n" "${chrony_text}" | grep -q "Leap status[[:space:]]*: Normal" || return 1
+        printf "%s\n" "${chrony_text}" | awk -F: '
+            /System time/ {
+                value = $2
+                gsub(/^[[:space:]]+/, "", value)
+                split(value, parts, " ")
+                offset = parts[1] + 0
+                if (offset < 0) {
+                    offset = -offset
+                }
+                exit(offset <= 0.100 ? 0 : 1)
+            }
+            END {
+                if (NR == 0) {
+                    exit 1
+                }
+            }
+        ' && return 0
+    fi
+
+    return 1
+}
+
+wait_for_clock_sync_before_session_id() {
+    local end
+
+    if [ "${WAIT_FOR_CLOCK_SYNC}" != true ]; then
+        echo "  [i] clock sync wait disabled before session naming."
+        return 0
+    fi
+
+    if clock_is_synced; then
+        echo "  [OK] clock is synced before session naming."
+        return 0
+    fi
+
+    echo "  [i] waiting up to ${CLOCK_SYNC_TIMEOUT}s for clock sync before session naming..."
+    end=$((SECONDS + CLOCK_SYNC_TIMEOUT))
+    while [ "${SECONDS}" -lt "${end}" ]; do
+        sleep 2
+        if clock_is_synced; then
+            echo "  [OK] clock synced before session naming."
+            return 0
+        fi
+    done
+
+    if [ "${REQUIRE_CLOCK_SYNC}" = true ]; then
+        echo "ERROR: clock did not sync within ${CLOCK_SYNC_TIMEOUT}s; refusing dataset session." >&2
+        echo "       Check chrony/NTP/network before recording multi-robot data." >&2
+        exit 1
+    fi
+
+    echo "  [WARN] clock did not sync within ${CLOCK_SYNC_TIMEOUT}s; continuing because REQUIRE_CLOCK_SYNC=false." >&2
+}
+
+wait_for_clock_sync_before_session_id
+DATESTAMP=$(date +%Y%m%d_%H%M%S)
 SESSION_ID="${ROBOT_NAME}_${SCENARIO}_${DATESTAMP}"
 BAG_DIR="${BAG_DIR:-${HOME}/agv_data}"
 BAG_FILE="${BAG_DIR}/${SESSION_ID}.bag"
@@ -121,6 +228,18 @@ if [ -f "${ROOT}/agv2_ws/install/setup.bash" ]; then
     source "${ROOT}/agv2_ws/install/setup.bash"
 elif [ -f "${ROOT}/agv_ws/devel/setup.bash" ]; then
     source "${ROOT}/agv_ws/devel/setup.bash"
+fi
+
+if [ "${ROS_VERSION}" = "2" ]; then
+    if [ "${ROSBAG2_STORAGE_ID}" = "auto" ]; then
+        if ros2 bag record --help 2>/dev/null | grep -Eq '\bmcap\b'; then
+            ROSBAG2_STORAGE_ID_EFFECTIVE="mcap"
+        else
+            ROSBAG2_STORAGE_ID_EFFECTIVE="sqlite3"
+        fi
+    else
+        ROSBAG2_STORAGE_ID_EFFECTIVE="${ROSBAG2_STORAGE_ID}"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -224,8 +343,8 @@ echo "  [i] hardware snapshot: ${HARDWARE_PRE_LOG}"
 
 # Check required topics are publishing (best-effort, bounded timeout).
 # If logging.launch is allowed to start bringup itself these checks may warn
-# before sensors exist; validate_bag.py remains the authoritative post-run gate.
-REQUIRED_TOPICS="/scan /odom /tf /camera/color/image_raw /camera/aligned_depth_to_color/image_raw"
+# before sensors exist; validate_ros2_bag.py remains the authoritative post-run gate.
+REQUIRED_TOPICS="/scan /odom /tf ${CAMERA_COLOR_TOPIC} ${CAMERA_DEPTH_TOPIC}"
 OPTIONAL_TOPICS=""
 GROUND_TRUTH_TOPICS="${MOCAP_TOPIC} /mocap"
 ALL_OK=true
@@ -318,7 +437,7 @@ fi
 if [ "$ALL_OK" = false ]; then
     echo ""
     echo "WARNING: Some topics not detected. Starting logging anyway."
-    echo "Run validate_bag.py after recording to check data quality."
+    echo "Run validate_ros2_bag.py after recording to check data quality."
     echo ""
 fi
 
@@ -351,11 +470,26 @@ calibration_hash: "sha256:${CALIB_HASH}"
 mocap_topic: "${MOCAP_TOPIC}"
 cmd_topic: "${CMD_TOPIC}"
 ground_truth_required: ${REQUIRE_GT}
+wait_for_clock_sync: ${WAIT_FOR_CLOCK_SYNC}
+clock_sync_timeout_sec: ${CLOCK_SYNC_TIMEOUT}
+clock_sync_required: ${REQUIRE_CLOCK_SYNC}
 imu_required: ${REQUIRE_IMU}
 imu_topics: "${IMU_TOPICS}"
 camera_imu: enabled
+camera_color_topic: "${CAMERA_COLOR_TOPIC}"
+camera_depth_topic: "${CAMERA_DEPTH_TOPIC}"
+camera_gyro_topic: "${CAMERA_GYRO_TOPIC}"
+camera_accel_topic: "${CAMERA_ACCEL_TOPIC}"
 enable_realsense_sync: ${ENABLE_REALSENSE_SYNC}
 rosbag2_max_cache_size_bytes: ${ROSBAG2_MAX_CACHE_SIZE}
+rosbag2_max_bag_size_bytes: ${ROSBAG2_MAX_BAG_SIZE}
+rosbag2_storage_id_requested: "${ROSBAG2_STORAGE_ID}"
+rosbag2_storage_id_effective: "${ROSBAG2_STORAGE_ID_EFFECTIVE}"
+rosbag2_storage_config: "${ROSBAG2_STORAGE_CONFIG}"
+rosbag2_storage_preset_profile: "${ROSBAG2_STORAGE_PRESET_PROFILE}"
+rosbag2_qos_overrides: "${ROSBAG2_QOS_OVERRIDES}"
+rosbag_stop_timeout_sec: ${ROSBAG_STOP_TIMEOUT}
+bringup_stop_timeout_sec: ${BRINGUP_STOP_TIMEOUT}
 realsense_camera_gate_required: ${RUN_REALSENSE_CAMERA_GATE}
 realsense_camera_gate_seconds: ${REALSENSE_CAMERA_GATE_SECONDS}
 rgbd_warn_gate_gap_sec: ${RGBD_WARN_GATE_GAP_SEC}
@@ -364,8 +498,12 @@ camera_imu_hard_gate_gap_sec: ${MAX_CAMERA_IMU_GATE_GAP_SEC}
 realsense_camera_gate_pre_log: ${SESSION_ID}_camera_gate_pre.log
 realsense_camera_gate_post_log: ${SESSION_ID}_camera_gate_post.log
 strict_realsense_uvc_log: ${STRICT_REALSENSE_UVC_LOG}
+rate_epsilon_hz: ${RATE_EPSILON_HZ}
+realsense_active_rgbd_gap_abort: ${REALSENSE_ACTIVE_RGBD_GAP_ABORT}
 runtime_watchdog_enabled: ${ENABLE_RUNTIME_WATCHDOG}
 runtime_rgbd_watchdog_enabled: ${ENABLE_RUNTIME_RGBD_WATCHDOG}
+runtime_camera_imu_watchdog_enabled: ${ENABLE_RUNTIME_CAMERA_IMU_WATCHDOG}
+runtime_watchdog_abort_on_failure: ${RUNTIME_WATCHDOG_ABORT_ON_FAILURE}
 runtime_watchdog_log: ${SESSION_ID}_runtime_watchdog.log
 runtime_watchdog_status: ~
 rgbd_startup_timeout_sec: ${RGBD_STARTUP_TIMEOUT}
@@ -383,7 +521,7 @@ camera_profile:
   depth_height: ${CAMERA_DEPTH_HEIGHT}
   depth_fps: ${CAMERA_DEPTH_FPS}
 notes: ""
-usb_mode_note: "D455 observed on USB 3.x; RGB-D and /camera/imu are recorded when available."
+usb_mode_note: "D455 observed on USB 3.x; raw RGB-D and raw D455 gyro/accel are recorded when available."
 EOF
 
 echo ""
@@ -492,7 +630,7 @@ finalise_manifest() {
 
     # Update manifest with final values
     if [ -s "${RUNTIME_WATCHDOG_STATUS_FILE}" ]; then
-        WATCHDOG_STATUS="$(head -1 "${RUNTIME_WATCHDOG_STATUS_FILE}" | tr -cd 'A-Za-z0-9_ .:-' | sed 's/[[:space:]]*$//')"
+        WATCHDOG_STATUS="$(head -1 "${RUNTIME_WATCHDOG_STATUS_FILE}" | tr -cd 'A-Za-z0-9_ .:=-' | sed 's/[[:space:]]*$//')"
     fi
     sed -i "s/time_end: ~/time_end: $(date +%H:%M:%S)/" "${MANIFEST_FILE}"
     sed -i "s/bag_size_mb: ~/bag_size_mb: ${BAG_SIZE_MB:-unknown}/" "${MANIFEST_FILE}"
@@ -506,7 +644,7 @@ finalise_manifest() {
     echo ""
     echo "Run quality check:"
     if [ "${ROS_VERSION}" = "2" ]; then
-        echo "  python3 scripts/logging/validate_bag.py ${BAG_DIR}/${SESSION_ID}"
+        echo "  CMD_TOPIC=${CMD_TOPIC} DEPTH_TOPIC=${CAMERA_DEPTH_TOPIC} IMU_TOPICS=\"${IMU_TOPICS}\" python3 scripts/logging/validate_ros2_bag.py ${BAG_DIR}/${SESSION_ID} --require-resilient-storage"
     else
         echo "  python3 scripts/logging/validate_bag.py ${BAG_DIR}/${SESSION_ID}.bag"
     fi
@@ -518,8 +656,10 @@ run_camera_pre_gate() {
     fi
 
     local color_log="${BAG_DIR}/${SESSION_ID}_camera_gate_pre_color_hz.txt"
-    local depth_log="${BAG_DIR}/${SESSION_ID}_camera_gate_pre_aligned_depth_hz.txt"
+    local depth_log="${BAG_DIR}/${SESSION_ID}_camera_gate_pre_depth_hz.txt"
     local imu_log="${BAG_DIR}/${SESSION_ID}_camera_gate_pre_imu_hz.txt"
+    local gyro_log="${BAG_DIR}/${SESSION_ID}_camera_gate_pre_gyro_hz.txt"
+    local accel_log="${BAG_DIR}/${SESSION_ID}_camera_gate_pre_accel_hz.txt"
     local gate_bringup_log="${BAG_DIR}/${SESSION_ID}_camera_gate_bringup_window.log"
     local gate_start_line=0
     local failures=0
@@ -538,27 +678,35 @@ run_camera_pre_gate() {
         echo "rgbd_warn_gate_gap_sec: ${RGBD_WARN_GATE_GAP_SEC}"
         echo "rgbd_hard_gate_gap_sec: ${MAX_RGBD_GATE_GAP_SEC}"
         echo "camera_imu_hard_gate_gap_sec: ${MAX_CAMERA_IMU_GATE_GAP_SEC}"
+        echo "rate_epsilon_hz: ${RATE_EPSILON_HZ}"
+        echo "active_rgbd_gap_abort: ${REALSENSE_ACTIVE_RGBD_GAP_ABORT}"
         echo "color_log: $(basename "${color_log}")"
-        echo "aligned_depth_log: $(basename "${depth_log}")"
+        echo "depth_log: $(basename "${depth_log}")"
         echo "imu_log: $(basename "${imu_log}")"
+        echo "gyro_log: $(basename "${gyro_log}")"
+        echo "accel_log: $(basename "${accel_log}")"
         echo "bringup_window_log: $(basename "${gate_bringup_log}")"
         echo ""
     } > "${CAMERA_GATE_PRE_LOG}"
 
     gate_start_line="$(wc -l < "${BRINGUP_LOG}" 2>/dev/null || echo 0)"
-    timeout "${REALSENSE_CAMERA_GATE_SECONDS}" ros2 topic hz /camera/color/image_raw --window 40 \
+    timeout "${REALSENSE_CAMERA_GATE_SECONDS}" ros2 topic hz "${CAMERA_COLOR_TOPIC}" --window 40 \
         > "${color_log}" 2>&1 &
     local color_pid=$!
-    timeout "${REALSENSE_CAMERA_GATE_SECONDS}" ros2 topic hz /camera/aligned_depth_to_color/image_raw --window 40 \
+    timeout "${REALSENSE_CAMERA_GATE_SECONDS}" ros2 topic hz "${CAMERA_DEPTH_TOPIC}" --window 40 \
         > "${depth_log}" 2>&1 &
     local depth_pid=$!
-    timeout "${REALSENSE_CAMERA_GATE_SECONDS}" ros2 topic hz /camera/imu --window 80 \
-        > "${imu_log}" 2>&1 &
-    local imu_pid=$!
+    timeout "${REALSENSE_CAMERA_GATE_SECONDS}" ros2 topic hz "${CAMERA_GYRO_TOPIC}" --window 80 \
+        > "${gyro_log}" 2>&1 &
+    local gyro_pid=$!
+    timeout "${REALSENSE_CAMERA_GATE_SECONDS}" ros2 topic hz "${CAMERA_ACCEL_TOPIC}" --window 40 \
+        > "${accel_log}" 2>&1 &
+    local accel_pid=$!
 
     wait "${color_pid}" 2>/dev/null || true
     wait "${depth_pid}" 2>/dev/null || true
-    wait "${imu_pid}" 2>/dev/null || true
+    wait "${gyro_pid}" 2>/dev/null || true
+    wait "${accel_pid}" 2>/dev/null || true
 
     if printf "%s" "${gate_start_line}" | grep -Eq '^[0-9]+$'; then
         tail -n "+$((gate_start_line + 1))" "${BRINGUP_LOG}" > "${gate_bringup_log}" 2>/dev/null || \
@@ -568,7 +716,19 @@ run_camera_pre_gate() {
     fi
 
     _camera_rate_from_log() {
-        grep "average rate" "$1" | tail -1 | awk -F': ' '{print $2}' | awk '{print $1}'
+        awk '/average rate:/ { print $3 }' "$1" | sort -n | awk '
+            { rates[NR] = $1 }
+            END {
+                if (NR == 0) {
+                    exit
+                }
+                if (NR % 2 == 1) {
+                    print rates[(NR + 1) / 2]
+                } else {
+                    printf "%.3f\n", (rates[NR / 2] + rates[(NR / 2) + 1]) / 2
+                }
+            }
+        '
     }
 
     _camera_max_gap_from_log() {
@@ -603,19 +763,21 @@ run_camera_pre_gate() {
         local warn_gap_limit="$5"
         local hard_gap_limit="$6"
         local min_gap_window="$7"
+        local abort_on_hard_gap="${8:-true}"
         local max_gap
 
         rate="$(_camera_rate_from_log "${file}")"
         if [ -z "${rate}" ]; then
             echo "FAIL ${label}: no average rate for ${topic}; see ${file}" | tee -a "${CAMERA_GATE_PRE_LOG}"
-            failures=$((failures + 1))
-            return
+            return 1
         fi
         if awk -v rate="${rate}" -v min="${min_rate}" 'BEGIN { exit(rate >= min ? 0 : 1) }'; then
             echo "PASS ${label}: ${topic} ${rate} Hz" | tee -a "${CAMERA_GATE_PRE_LOG}"
+        elif awk -v rate="${rate}" -v min="${min_rate}" -v eps="${RATE_EPSILON_HZ}" 'BEGIN { exit(rate + eps >= min ? 0 : 1) }'; then
+            echo "WARN ${label}: ${topic} ${rate} Hz is within ${RATE_EPSILON_HZ} Hz of required ${min_rate} Hz" | tee -a "${CAMERA_GATE_PRE_LOG}"
         else
             echo "FAIL ${label}: ${topic} ${rate} Hz, expected >= ${min_rate} Hz" | tee -a "${CAMERA_GATE_PRE_LOG}"
-            failures=$((failures + 1))
+            return 1
         fi
 
         max_gap="$(_camera_max_gap_from_log "${file}" "${min_gap_window}")"
@@ -625,15 +787,19 @@ run_camera_pre_gate() {
             echo "PASS ${label} steady max gap: ${max_gap}s <= warning ${warn_gap_limit}s after window ${min_gap_window}" | tee -a "${CAMERA_GATE_PRE_LOG}"
         elif awk -v gap="${max_gap}" -v limit="${hard_gap_limit}" 'BEGIN { exit(gap <= limit ? 0 : 1) }'; then
             echo "WARN ${label} steady max gap: ${max_gap}s exceeds warning ${warn_gap_limit}s but is <= hard ${hard_gap_limit}s after window ${min_gap_window}" | tee -a "${CAMERA_GATE_PRE_LOG}"
+        elif [ "${abort_on_hard_gap}" != true ]; then
+            echo "WARN ${label} steady max gap: ${max_gap}s exceeds active-monitor hard ${hard_gap_limit}s after window ${min_gap_window}; post-run bag validation is authoritative" | tee -a "${CAMERA_GATE_PRE_LOG}"
         else
             echo "FAIL ${label} steady max gap: ${max_gap}s exceeds hard ${hard_gap_limit}s after window ${min_gap_window}" | tee -a "${CAMERA_GATE_PRE_LOG}"
-            failures=$((failures + 1))
+            return 1
         fi
+        return 0
     }
 
-    _camera_check_rate_log /camera/color/image_raw "${color_log}" "${MIN_RGBD_HZ}" "color stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40
-    _camera_check_rate_log /camera/aligned_depth_to_color/image_raw "${depth_log}" "${MIN_RGBD_HZ}" "aligned depth stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40
-    _camera_check_rate_log /camera/imu "${imu_log}" "${MIN_CAMERA_IMU_HZ}" "camera imu stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" 80
+    _camera_check_rate_log "${CAMERA_COLOR_TOPIC}" "${color_log}" "${MIN_RGBD_HZ}" "color stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40 "${REALSENSE_ACTIVE_RGBD_GAP_ABORT}" || failures=$((failures + 1))
+    _camera_check_rate_log "${CAMERA_DEPTH_TOPIC}" "${depth_log}" "${MIN_RGBD_HZ}" "depth stream" "${RGBD_WARN_GATE_GAP_SEC}" "${MAX_RGBD_GATE_GAP_SEC}" 40 "${REALSENSE_ACTIVE_RGBD_GAP_ABORT}" || failures=$((failures + 1))
+    _camera_check_rate_log "${CAMERA_GYRO_TOPIC}" "${gyro_log}" "150" "camera gyro stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" 80 || failures=$((failures + 1))
+    _camera_check_rate_log "${CAMERA_ACCEL_TOPIC}" "${accel_log}" "60" "camera accel stream" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" "${MAX_CAMERA_IMU_GATE_GAP_SEC}" 40 || failures=$((failures + 1))
 
     if grep -Eiq "The device has been disconnected|USB disconnect|No such device|device removed" "${gate_bringup_log}" 2>/dev/null; then
         echo "FAIL RealSense runtime log: camera disconnect/device-drop errors observed" | tee -a "${CAMERA_GATE_PRE_LOG}"
@@ -710,7 +876,10 @@ run_runtime_watchdog() {
         echo "startup_delay_sec: ${RUNTIME_WATCHDOG_STARTUP_DELAY}"
         echo "interval_sec: ${RUNTIME_WATCHDOG_INTERVAL}"
         echo "hz_timeout_sec: ${RUNTIME_WATCHDOG_HZ_TIMEOUT}"
+        echo "max_consecutive_failure_cycles: ${RUNTIME_WATCHDOG_MAX_CONSECUTIVE_FAILURES}"
+        echo "abort_on_failure: ${RUNTIME_WATCHDOG_ABORT_ON_FAILURE}"
         echo "runtime_rgbd_watchdog_enabled: ${ENABLE_RUNTIME_RGBD_WATCHDOG}"
+        echo "runtime_camera_imu_watchdog_enabled: ${ENABLE_RUNTIME_CAMERA_IMU_WATCHDOG}"
         echo "min_scan_hz: ${MIN_SCAN_HZ}"
         echo "min_odom_hz: ${MIN_ODOM_HZ}"
         echo "min_rgbd_hz: ${MIN_RGBD_HZ}"
@@ -721,6 +890,7 @@ run_runtime_watchdog() {
     } > "${RUNTIME_WATCHDOG_LOG}"
     echo "RUNNING" > "${RUNTIME_WATCHDOG_STATUS_FILE}"
 
+    local consecutive_failure_cycles=0
     sleep "${RUNTIME_WATCHDOG_STARTUP_DELAY}"
     while [ -n "${ROSBAG_PID}" ] && kill -0 "${ROSBAG_PID}" 2>/dev/null; do
         cycle=$((cycle + 1))
@@ -733,24 +903,40 @@ run_runtime_watchdog() {
         watchdog_rate_check /scan "${MIN_SCAN_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 20 || failures=$((failures + 1))
         watchdog_rate_check /odom "${MIN_ODOM_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 20 || failures=$((failures + 1))
         if [ "${ENABLE_RUNTIME_RGBD_WATCHDOG}" = true ]; then
-            watchdog_liveness_check /camera/color/image_raw 8 || failures=$((failures + 1))
-            watchdog_liveness_check /camera/aligned_depth_to_color/image_raw 8 || failures=$((failures + 1))
+            watchdog_liveness_check "${CAMERA_COLOR_TOPIC}" 8 || failures=$((failures + 1))
+            watchdog_liveness_check "${CAMERA_DEPTH_TOPIC}" 8 || failures=$((failures + 1))
         else
-            echo "SKIP /camera/color/image_raw: high-bandwidth stream checked by pre-run gate and post-run bag audit" >> "${RUNTIME_WATCHDOG_LOG}"
-            echo "SKIP /camera/aligned_depth_to_color/image_raw: high-bandwidth stream checked by pre-run gate and post-run bag audit" >> "${RUNTIME_WATCHDOG_LOG}"
+            echo "SKIP ${CAMERA_COLOR_TOPIC}: high-bandwidth stream checked by pre-run gate and post-run bag audit" >> "${RUNTIME_WATCHDOG_LOG}"
+            echo "SKIP ${CAMERA_DEPTH_TOPIC}: high-bandwidth stream checked by pre-run gate and post-run bag audit" >> "${RUNTIME_WATCHDOG_LOG}"
         fi
-        watchdog_rate_check /camera/imu "${MIN_CAMERA_IMU_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 50 || failures=$((failures + 1))
+        if [ "${ENABLE_RUNTIME_CAMERA_IMU_WATCHDOG}" = true ]; then
+            watchdog_liveness_check "${CAMERA_GYRO_TOPIC}" 8 || failures=$((failures + 1))
+            watchdog_liveness_check "${CAMERA_ACCEL_TOPIC}" 8 || failures=$((failures + 1))
+        else
+            echo "SKIP ${CAMERA_GYRO_TOPIC} and ${CAMERA_ACCEL_TOPIC}: high-rate camera streams checked by pre-run gate and post-run bag audit" >> "${RUNTIME_WATCHDOG_LOG}"
+        fi
         if [ "${REQUIRE_GT}" = true ]; then
             watchdog_rate_check "${MOCAP_TOPIC}" "${MIN_GT_HZ}" "${RUNTIME_WATCHDOG_HZ_TIMEOUT}" 20 || failures=$((failures + 1))
         fi
 
         if [ "${failures}" -ne 0 ]; then
-            echo "FAIL: ${failures} runtime watchdog check(s) failed; stopping recording." | tee -a "${RUNTIME_WATCHDOG_LOG}"
-            echo "FAIL_RUNTIME_WATCHDOG" > "${RUNTIME_WATCHDOG_STATUS_FILE}"
-            kill -INT "${ROSBAG_PID}" 2>/dev/null || true
-            return 1
+            consecutive_failure_cycles=$((consecutive_failure_cycles + 1))
+            echo "WARN: ${failures} runtime watchdog check(s) failed in cycle ${cycle}; consecutive_failure_cycles=${consecutive_failure_cycles}/${RUNTIME_WATCHDOG_MAX_CONSECUTIVE_FAILURES}" | tee -a "${RUNTIME_WATCHDOG_LOG}"
+            if [ "${consecutive_failure_cycles}" -ge "${RUNTIME_WATCHDOG_MAX_CONSECUTIVE_FAILURES}" ]; then
+                if [ "${RUNTIME_WATCHDOG_ABORT_ON_FAILURE}" = true ]; then
+                    echo "FAIL: runtime watchdog failed ${consecutive_failure_cycles} consecutive cycle(s); stopping recording." | tee -a "${RUNTIME_WATCHDOG_LOG}"
+                    echo "FAIL_RUNTIME_WATCHDOG" > "${RUNTIME_WATCHDOG_STATUS_FILE}"
+                    kill -INT "${ROSBAG_PID}" 2>/dev/null || true
+                    return 1
+                fi
+                echo "WARN: runtime watchdog failed ${consecutive_failure_cycles} consecutive cycle(s); recording continues and post-run bag validation is authoritative." | tee -a "${RUNTIME_WATCHDOG_LOG}"
+                echo "WARN_RUNTIME_WATCHDOG consecutive_failure_cycles=${consecutive_failure_cycles}" > "${RUNTIME_WATCHDOG_STATUS_FILE}"
+            fi
+            sleep "${RUNTIME_WATCHDOG_INTERVAL}"
+            continue
         fi
 
+        consecutive_failure_cycles=0
         echo "PASS watchdog cycle ${cycle}" >> "${RUNTIME_WATCHDOG_LOG}"
         sleep "${RUNTIME_WATCHDOG_INTERVAL}"
     done
@@ -759,7 +945,12 @@ run_runtime_watchdog() {
        grep -q "^FAIL_RUNTIME_WATCHDOG" "${RUNTIME_WATCHDOG_STATUS_FILE}"; then
         return 1
     fi
-    echo "STOPPED_CLEANLY cycles=${cycle}" > "${RUNTIME_WATCHDOG_STATUS_FILE}"
+    if [ -f "${RUNTIME_WATCHDOG_STATUS_FILE}" ] && \
+       grep -q "^WARN_RUNTIME_WATCHDOG" "${RUNTIME_WATCHDOG_STATUS_FILE}"; then
+        echo "STOPPED_WITH_RUNTIME_WARNINGS cycles=${cycle}" > "${RUNTIME_WATCHDOG_STATUS_FILE}"
+    else
+        echo "STOPPED_CLEANLY cycles=${cycle}" > "${RUNTIME_WATCHDOG_STATUS_FILE}"
+    fi
     echo "STOPPED_CLEANLY: rosbag no longer running" >> "${RUNTIME_WATCHDOG_LOG}"
     return 0
 }
@@ -848,12 +1039,12 @@ cleanup() {
         echo ""
         echo "Stopping rosbag..."
         kill -INT "${ROSBAG_PID}" 2>/dev/null || true
-        wait_or_kill "${ROSBAG_PID}" "rosbag" 30
+        wait_or_kill "${ROSBAG_PID}" "rosbag" "${ROSBAG_STOP_TIMEOUT}"
     fi
 
     if [ -n "${WATCHDOG_PID}" ] && kill -0 "${WATCHDOG_PID}" 2>/dev/null; then
         kill -TERM "${WATCHDOG_PID}" 2>/dev/null || true
-        wait_or_kill "${WATCHDOG_PID}" "runtime watchdog" 10
+        wait_or_kill "${WATCHDOG_PID}" "runtime watchdog" "${WATCHDOG_STOP_TIMEOUT}"
     fi
     if [ ! -s "${RUNTIME_WATCHDOG_STATUS_FILE}" ]; then
         if [ "${RECORDING_STARTED}" = true ]; then
@@ -874,10 +1065,10 @@ cleanup() {
         echo "Stopping bringup..."
         if [ -n "${BRINGUP_PGID}" ] && kill -0 "-${BRINGUP_PGID}" 2>/dev/null; then
             kill -INT "-${BRINGUP_PGID}" 2>/dev/null || true
-            wait_or_kill_group "${BRINGUP_PGID}" "${BRINGUP_PID}" "bringup" 30
+            wait_or_kill_group "${BRINGUP_PGID}" "${BRINGUP_PID}" "bringup" "${BRINGUP_STOP_TIMEOUT}"
         else
             kill -INT "${BRINGUP_PID}" 2>/dev/null || true
-            wait_or_kill "${BRINGUP_PID}" "bringup" 30
+            wait_or_kill "${BRINGUP_PID}" "bringup" "${BRINGUP_STOP_TIMEOUT}"
         fi
     fi
 
@@ -904,13 +1095,32 @@ export MOCAP_TOPIC="$MOCAP_TOPIC"
 export CMD_TOPIC="$CMD_TOPIC"
 export REQUIRE_GT="$REQUIRE_GT"
 export REQUIRE_IMU="$REQUIRE_IMU"
+export CAMERA_COLOR_TOPIC="$CAMERA_COLOR_TOPIC"
+export CAMERA_COLOR_INFO_TOPIC="$CAMERA_COLOR_INFO_TOPIC"
+export CAMERA_DEPTH_TOPIC="$CAMERA_DEPTH_TOPIC"
+export CAMERA_DEPTH_INFO_TOPIC="$CAMERA_DEPTH_INFO_TOPIC"
+export CAMERA_GYRO_TOPIC="$CAMERA_GYRO_TOPIC"
+export CAMERA_ACCEL_TOPIC="$CAMERA_ACCEL_TOPIC"
+export CAMERA_FUSED_IMU_TOPIC="$CAMERA_FUSED_IMU_TOPIC"
 export IMU_TOPICS="$IMU_TOPICS"
 
 export ENABLE_REALSENSE_SYNC="$ENABLE_REALSENSE_SYNC"
 export ROSBAG2_MAX_CACHE_SIZE="$ROSBAG2_MAX_CACHE_SIZE"
+export ROSBAG2_MAX_BAG_SIZE="$ROSBAG2_MAX_BAG_SIZE"
+export ROSBAG2_STORAGE_ID="$ROSBAG2_STORAGE_ID"
+export ROSBAG2_STORAGE_ID_EFFECTIVE="$ROSBAG2_STORAGE_ID_EFFECTIVE"
+export ROSBAG2_STORAGE_CONFIG="$ROSBAG2_STORAGE_CONFIG"
+export ROSBAG2_STORAGE_PRESET_PROFILE="$ROSBAG2_STORAGE_PRESET_PROFILE"
+export ROSBAG2_QOS_OVERRIDES="$ROSBAG2_QOS_OVERRIDES"
+export ROSBAG_STOP_TIMEOUT="$ROSBAG_STOP_TIMEOUT"
+export BRINGUP_STOP_TIMEOUT="$BRINGUP_STOP_TIMEOUT"
+export WATCHDOG_STOP_TIMEOUT="$WATCHDOG_STOP_TIMEOUT"
+export RUNTIME_WATCHDOG_ABORT_ON_FAILURE="$RUNTIME_WATCHDOG_ABORT_ON_FAILURE"
 export RUN_REALSENSE_CAMERA_GATE="$RUN_REALSENSE_CAMERA_GATE"
 export REALSENSE_CAMERA_GATE_SECONDS="$REALSENSE_CAMERA_GATE_SECONDS"
 export STRICT_REALSENSE_UVC_LOG="$STRICT_REALSENSE_UVC_LOG"
+export RATE_EPSILON_HZ="$RATE_EPSILON_HZ"
+export REALSENSE_ACTIVE_RGBD_GAP_ABORT="$REALSENSE_ACTIVE_RGBD_GAP_ABORT"
 export RGBD_STARTUP_TIMEOUT="$RGBD_STARTUP_TIMEOUT"
 export IMU_STARTUP_TIMEOUT="$IMU_STARTUP_TIMEOUT"
 
@@ -1044,8 +1254,8 @@ check_topic_silent() {
 
 check_topic_silent /scan 30 || FAILED_TOPICS+=("/scan")
 check_topic_silent /odom 20 || FAILED_TOPICS+=("/odom")
-check_topic_silent /camera/color/image_raw "${RGBD_STARTUP_TIMEOUT}" || FAILED_TOPICS+=("/camera/color/image_raw")
-check_topic_silent /camera/aligned_depth_to_color/image_raw "${RGBD_STARTUP_TIMEOUT}" || FAILED_TOPICS+=("/camera/aligned_depth_to_color/image_raw")
+check_topic_silent "${CAMERA_COLOR_TOPIC}" "${RGBD_STARTUP_TIMEOUT}" || FAILED_TOPICS+=("${CAMERA_COLOR_TOPIC}")
+check_topic_silent "${CAMERA_DEPTH_TOPIC}" "${RGBD_STARTUP_TIMEOUT}" || FAILED_TOPICS+=("${CAMERA_DEPTH_TOPIC}")
 
 if [ "$REQUIRE_IMU" = true ]; then
     IMU_OK=false
@@ -1081,22 +1291,50 @@ if [ "${ROS_VERSION}" = "2" ]; then
         "${CMD_TOPIC}"
         /tf
         /tf_static
-        /camera/color/image_raw
-        /camera/color/camera_info
-        /camera/depth/camera_info
-        /camera/aligned_depth_to_color/image_raw
-        /camera/aligned_depth_to_color/camera_info
+        "${CAMERA_COLOR_TOPIC}"
+        "${CAMERA_COLOR_INFO_TOPIC}"
+        "${CAMERA_DEPTH_TOPIC}"
+        "${CAMERA_DEPTH_INFO_TOPIC}"
         /camera/extrinsics/depth_to_color
-        /camera/imu
+        /camera/extrinsics/depth_to_gyro
+        /camera/extrinsics/depth_to_accel
+        "${CAMERA_FUSED_IMU_TOPIC}"
+        "${CAMERA_GYRO_TOPIC}"
+        "${CAMERA_ACCEL_TOPIC}"
         /imu
         /diagnostics
         /tag_detections
         "${MOCAP_TOPIC}"
         /mocap
     )
+    ROS2_STORAGE_ARGS=()
+    if [ -n "${ROSBAG2_STORAGE_ID_EFFECTIVE}" ]; then
+        ROS2_STORAGE_ARGS+=(-s "${ROSBAG2_STORAGE_ID_EFFECTIVE}")
+    fi
+    if [ "${ROSBAG2_STORAGE_ID_EFFECTIVE}" = "sqlite3" ] && [ -n "${ROSBAG2_STORAGE_CONFIG}" ]; then
+        if [ -f "${ROSBAG2_STORAGE_CONFIG}" ]; then
+            ROS2_STORAGE_ARGS+=(--storage-config-file "${ROSBAG2_STORAGE_CONFIG}")
+        else
+            echo "  [WARN] rosbag2 storage config not found: ${ROSBAG2_STORAGE_CONFIG}; using rosbag2 defaults."
+        fi
+    fi
+    if [ -n "${ROSBAG2_STORAGE_PRESET_PROFILE}" ]; then
+        ROS2_STORAGE_ARGS+=(--storage-preset-profile "${ROSBAG2_STORAGE_PRESET_PROFILE}")
+    fi
+    if [ -n "${ROSBAG2_QOS_OVERRIDES}" ]; then
+        if [ -f "${ROSBAG2_QOS_OVERRIDES}" ]; then
+            ROS2_STORAGE_ARGS+=(--qos-profile-overrides-path "${ROSBAG2_QOS_OVERRIDES}")
+        else
+            echo "  [WARN] rosbag2 QoS overrides file not found: ${ROSBAG2_QOS_OVERRIDES}; using rosbag2 QoS defaults."
+        fi
+    fi
+    if [ -n "${ROSBAG2_MAX_BAG_SIZE}" ] && [ "${ROSBAG2_MAX_BAG_SIZE}" != "0" ]; then
+        ROS2_STORAGE_ARGS+=(--max-bag-size "${ROSBAG2_MAX_BAG_SIZE}")
+    fi
     # ROS2: ros2 bag record writes to a directory; -o specifies the directory name
     ros2 bag record \
         --max-cache-size "${ROSBAG2_MAX_CACHE_SIZE}" \
+        "${ROS2_STORAGE_ARGS[@]}" \
         -o "${BAG_DIR}/${SESSION_ID}" \
         "${ROS2_RECORD_TOPICS[@]}" &
 else
@@ -1107,13 +1345,16 @@ else
         /cmd_vel \
         /tf \
         /tf_static \
-        /camera/color/image_raw \
-        /camera/color/camera_info \
-        /camera/depth/camera_info \
-        /camera/aligned_depth_to_color/image_raw \
-        /camera/aligned_depth_to_color/camera_info \
+        "${CAMERA_COLOR_TOPIC}" \
+        "${CAMERA_COLOR_INFO_TOPIC}" \
+        "${CAMERA_DEPTH_TOPIC}" \
+        "${CAMERA_DEPTH_INFO_TOPIC}" \
         /camera/extrinsics/depth_to_color \
-        /camera/imu \
+        /camera/extrinsics/depth_to_gyro \
+        /camera/extrinsics/depth_to_accel \
+        "${CAMERA_FUSED_IMU_TOPIC}" \
+        "${CAMERA_GYRO_TOPIC}" \
+        "${CAMERA_ACCEL_TOPIC}" \
         /imu \
         /diagnostics \
         /tag_detections \

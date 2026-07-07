@@ -20,9 +20,8 @@ REQUIRED_TOPICS = [
     "/tf_static",
     "/camera/color/image_raw",
     "/camera/color/camera_info",
+    "/camera/depth/image_rect_raw",
     "/camera/depth/camera_info",
-    "/camera/aligned_depth_to_color/image_raw",
-    "/camera/aligned_depth_to_color/camera_info",
     "/camera/extrinsics/depth_to_color",
     "/diagnostics",
 ]
@@ -33,9 +32,8 @@ MIN_HZ = {
     "/tf": 10.0,
     "/camera/color/image_raw": 12.0,
     "/camera/color/camera_info": 12.0,
+    "/camera/depth/image_rect_raw": 12.0,
     "/camera/depth/camera_info": 12.0,
-    "/camera/aligned_depth_to_color/image_raw": 12.0,
-    "/camera/aligned_depth_to_color/camera_info": 12.0,
 }
 
 IMU_TOPICS = [
@@ -183,7 +181,7 @@ def main():
             max_gap(header_times[topic])))
 
     color_stamps = header_times["/camera/color/image_raw"]
-    depth_stamps = header_times["/camera/aligned_depth_to_color/image_raw"]
+    depth_stamps = header_times["/camera/depth/image_rect_raw"]
     sync_diffs = nearest_diffs(color_stamps, depth_stamps)
     print("")
     print("camera_sync:")

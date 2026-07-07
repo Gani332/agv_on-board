@@ -82,6 +82,12 @@ is small, low-bandwidth, and should stay stable. A bounded RGB-D warning means
 the robot can start recording, but the final bag still needs the post-run bag
 validator/audit before the run is called publishable.
 
+During recording, the runtime watchdog intentionally avoids `ros2 topic hz`
+probes against camera-owned RGB-D and D455 IMU streams by default. Those probes
+can perturb or mis-measure a healthy high-rate camera stream. Runtime watchdogs
+stay focused on lower-bandwidth base/scan/GT liveness; camera stream quality is
+decided by the mandatory pre-run gate and post-run bag validator.
+
 ## One-Time Provisioning
 
 For a freshly flashed ROS 2 robot, run the standard provisioning path first:
@@ -343,9 +349,10 @@ The current ROS 2 dataset gate standard is:
 ```text
 D455 firmware:                  5.17.0.10
 standalone librealsense tools:  2.58.1
-RealSense ROS driver:           realsense2_camera 4.57.7
-RealSense ROS node runtime:     LibRealSense 2.57.7
-RGB-D stream gate:              640x480 at 15 Hz
+RealSense ROS driver:           realsense2_camera 4.58.2
+RealSense ROS node runtime:     LibRealSense 2.58.2
+RGB-D stream gate:              raw color + raw depth, 640x480 at 15 Hz
+IMU stream gate:                raw gyro + raw accel
 USB gate:                       USB 3.x / 5000 Mb/s
 ```
 
@@ -490,7 +497,7 @@ bash scripts/diagnostics/robot_doctor.sh agv102 \
   --profile dataset \
   --ros ros2 \
   --bringup-cmd "ros2 launch agv_bringup bringup.launch.py" \
-  --bringup-wait 45
+  --bringup-wait 90
 ```
 
 ROS 1 example:
@@ -500,7 +507,7 @@ bash scripts/diagnostics/robot_doctor.sh agv1 \
   --profile dataset \
   --ros ros1 \
   --bringup-cmd "roslaunch agv_bringup bringup.launch" \
-  --bringup-wait 45
+  --bringup-wait 90
 ```
 
 The process is stopped at the end of the diagnostic run.
